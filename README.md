@@ -296,12 +296,6 @@ Contributions are welcome! Feel free to:
 
 This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
 
-## 👤 Author
-
-**Kofysh**
-
-- GitHub: [@Kofysh](https://github.com/Kofysh)
-
 ## 🙏 Acknowledgments
 
 - [GLPI Project](https://glpi-project.org/) for this excellent IT asset management tool
