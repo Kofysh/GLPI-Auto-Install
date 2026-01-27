@@ -104,8 +104,8 @@ log() {
         DEBUG)   color="${C_DIM}";      prefix="[DEBUG]" ;;
         INFO)    color="${C_BLUE}";     prefix="[INFO] " ;;
         SUCCESS) color="${C_GREEN}";    prefix="[OK]   " ;;
-        WARN)    color="${C_YELLOW}";   prefix="[AVERT]" ;;
-        ERROR)   color="${C_RED}";      prefix="[ERREUR]" ;;
+        WARN)    color="${C_YELLOW}";   prefix="[WARN] " ;;
+        ERROR)   color="${C_RED}";      prefix="[ERROR]" ;;
         FATAL)   color="${C_BG_RED}";   prefix="[FATAL]" ;;
     esac
     
@@ -172,7 +172,7 @@ print_progress() {
 
 spinner() {
     local pid=$1
-    local message="${2:-Traitement en cours...}"
+    local message="${2:-Processing...}"
     local spinchars='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
     local i=0
     
@@ -186,23 +186,23 @@ spinner() {
 }
 
 confirm() {
-    local message="${1:-Continuer ?}"
+    local message="${1:-Continue?}"
     local default="${2:-n}"
     
     if [[ "${UNATTENDED}" == "true" ]]; then
-        [[ "${default}" =~ ^[OoYy]$ ]] && return 0 || return 1
+        [[ "${default}" =~ ^[Yy]$ ]] && return 0 || return 1
     fi
     
     local prompt
-    [[ "${default}" =~ ^[OoYy]$ ]] && prompt="[O/n]" || prompt="[o/N]"
+    [[ "${default}" =~ ^[Yy]$ ]] && prompt="[Y/n]" || prompt="[y/N]"
     
     while true; do
         read -rp "  ${C_YELLOW}?${C_RESET} ${message} ${prompt}: " answer
         answer="${answer:-$default}"
         case "${answer}" in
-            [OoYy]*) return 0 ;;
+            [Yy]*) return 0 ;;
             [Nn]*) return 1 ;;
-            *) echo "  Veuillez répondre par oui ou non." ;;
+            *) echo "  Please answer yes or no." ;;
         esac
     done
 }
@@ -211,38 +211,38 @@ acquire_lock() {
     if [[ -f "${LOCK_FILE}" ]]; then
         local old_pid=$(cat "${LOCK_FILE}" 2>/dev/null)
         if [[ -n "${old_pid}" ]] && kill -0 "${old_pid}" 2>/dev/null; then
-            fatal "Une autre installation est déjà en cours (PID: ${old_pid})"
+            fatal "Another installation is already running (PID: ${old_pid})"
         fi
-        warn "Suppression d'un fichier de verrou obsolète"
+        warn "Removing stale lock file"
         rm -f "${LOCK_FILE}"
     fi
     
     echo "${SCRIPT_PID}" > "${LOCK_FILE}"
-    debug "Verrou acquis (PID: ${SCRIPT_PID})"
+    debug "Lock acquired (PID: ${SCRIPT_PID})"
 }
 
 release_lock() {
     rm -f "${LOCK_FILE}" 2>/dev/null || true
-    debug "Verrou libéré"
+    debug "Lock released"
 }
 
 save_state() {
     local state="$1"
     INSTALL_STATE="${state}"
     echo "${state}" > "${STATE_FILE}"
-    debug "État sauvegardé: ${state}"
+    debug "State saved: ${state}"
 }
 
 load_state() {
     if [[ -f "${STATE_FILE}" ]]; then
         INSTALL_STATE=$(cat "${STATE_FILE}")
-        debug "État chargé: ${INSTALL_STATE}"
+        debug "State loaded: ${INSTALL_STATE}"
     fi
 }
 
 add_rollback() {
     ROLLBACK_ACTIONS+=("$1")
-    debug "Action de rollback ajoutée: $1"
+    debug "Rollback action added: $1"
 }
 
 execute_rollback() {
@@ -250,7 +250,7 @@ execute_rollback() {
         return
     fi
     
-    warn "Exécution du rollback..."
+    warn "Executing rollback..."
     
     for ((i=${#ROLLBACK_ACTIONS[@]}-1; i>=0; i--)); do
         local action="${ROLLBACK_ACTIONS[i]}"
@@ -258,7 +258,7 @@ execute_rollback() {
         eval "${action}" 2>/dev/null || true
     done
     
-    success "Rollback terminé"
+    success "Rollback completed"
 }
 
 cleanup() {
@@ -268,30 +268,30 @@ cleanup() {
     rm -f "${STATE_FILE}" 2>/dev/null || true
     
     if [[ ${exit_code} -ne 0 && "${INSTALL_STATE}" != "completed" ]]; then
-        error "L'installation a échoué à l'état: ${INSTALL_STATE}"
-        if confirm "Voulez-vous annuler les modifications ?" "o"; then
+        error "Installation failed at state: ${INSTALL_STATE}"
+        if confirm "Do you want to rollback changes?" "y"; then
             execute_rollback
         fi
     fi
     
     local end_time=$(date +%s)
     local duration=$((end_time - START_TIME))
-    info "Durée totale d'exécution: $((duration / 60))m $((duration % 60))s"
-    info "Fichier journal: ${LOG_FILE}"
+    info "Total execution time: $((duration / 60))m $((duration % 60))s"
+    info "Log file: ${LOG_FILE}"
 }
 
 trap cleanup EXIT
-trap 'fatal "Installation interrompue par l'\''utilisateur"' INT TERM
+trap 'fatal "Installation interrupted by user"' INT TERM
 
 check_root() {
     if [[ ${EUID} -ne 0 ]]; then
-        fatal "Ce script doit être exécuté en tant que root. Utilisez: sudo ${SCRIPT_NAME}"
+        fatal "This script must be run as root. Use: sudo ${SCRIPT_NAME}"
     fi
-    debug "Privilèges root confirmés"
+    debug "Root privileges confirmed"
 }
 
 check_network() {
-    info "Vérification de la connectivité réseau..."
+    info "Checking network connectivity..."
     
     local endpoints=("github.com" "api.github.com" "1.1.1.1")
     local reachable=0
@@ -303,17 +303,17 @@ check_network() {
     done
     
     if [[ ${reachable} -eq 0 ]]; then
-        fatal "Pas de connectivité réseau. Veuillez vérifier votre connexion Internet."
+        fatal "No network connectivity. Please check your internet connection."
     fi
     
-    success "Connectivité réseau vérifiée"
+    success "Network connectivity verified"
 }
 
 detect_system() {
-    print_step "Détection du Système"
+    print_step "System Detection"
     
     if [[ ! -f /etc/os-release ]]; then
-        fatal "Impossible de détecter l'OS: /etc/os-release introuvable"
+        fatal "Cannot detect OS: /etc/os-release not found"
     fi
     
     source /etc/os-release
@@ -347,7 +347,7 @@ detect_system() {
             SYSTEM[WEB_SERVICE]="httpd"
             ;;
         *)
-            fatal "Distribution non supportée: ${ID}"
+            fatal "Unsupported distribution: ${ID}"
             ;;
     esac
     
@@ -367,9 +367,9 @@ detect_system() {
     done
     
     if [[ "${supported}" != "true" && "${FORCE}" != "true" ]]; then
-        warn "L'OS ${PRETTY_NAME} n'est pas officiellement supporté"
-        if ! confirm "Continuer quand même ?" "n"; then
-            fatal "Installation annulée"
+        warn "OS ${PRETTY_NAME} is not officially supported"
+        if ! confirm "Continue anyway?" "n"; then
+            fatal "Installation cancelled"
         fi
     fi
     
@@ -412,73 +412,73 @@ detect_system() {
             ;;
     esac
     
-    success "Détecté: ${SYSTEM[OS_PRETTY_NAME]}"
-    info "  ├─ Famille: ${SYSTEM[OS_FAMILY]}"
-    info "  ├─ Gestionnaire de paquets: ${SYSTEM[PKG_MANAGER]}"
-    info "  ├─ Version PHP: ${SYSTEM[PHP_VERSION]}"
-    info "  ├─ Mémoire: ${SYSTEM[TOTAL_MEMORY_MB]} Mo"
-    info "  ├─ Disque disponible: ${SYSTEM[AVAILABLE_DISK_GB]} Go"
-    info "  ├─ Cœurs CPU: ${SYSTEM[CPU_CORES]}"
-    info "  └─ Adresse IP: ${SYSTEM[IP_ADDRESS]}"
+    success "Detected: ${SYSTEM[OS_PRETTY_NAME]}"
+    info "  ├─ Family: ${SYSTEM[OS_FAMILY]}"
+    info "  ├─ Package Manager: ${SYSTEM[PKG_MANAGER]}"
+    info "  ├─ PHP Version: ${SYSTEM[PHP_VERSION]}"
+    info "  ├─ Memory: ${SYSTEM[TOTAL_MEMORY_MB]} MB"
+    info "  ├─ Available Disk: ${SYSTEM[AVAILABLE_DISK_GB]} GB"
+    info "  ├─ CPU Cores: ${SYSTEM[CPU_CORES]}"
+    info "  └─ IP Address: ${SYSTEM[IP_ADDRESS]}"
 }
 
 check_requirements() {
-    print_step "Vérification des Prérequis"
+    print_step "Requirements Check"
     
     local errors=0
     
-    info "Vérification de la mémoire requise..."
+    info "Checking memory requirements..."
     if [[ ${SYSTEM[TOTAL_MEMORY_MB]} -lt ${MIN_MEMORY_MB} ]]; then
-        error "Mémoire insuffisante: ${SYSTEM[TOTAL_MEMORY_MB]}Mo < ${MIN_MEMORY_MB}Mo requis"
+        error "Insufficient memory: ${SYSTEM[TOTAL_MEMORY_MB]}MB < ${MIN_MEMORY_MB}MB required"
         ((errors++))
     else
-        success "Mémoire: ${SYSTEM[TOTAL_MEMORY_MB]}Mo (minimum: ${MIN_MEMORY_MB}Mo)"
+        success "Memory: ${SYSTEM[TOTAL_MEMORY_MB]}MB (minimum: ${MIN_MEMORY_MB}MB)"
     fi
     
-    info "Vérification de l'espace disque..."
+    info "Checking disk space..."
     if [[ ${SYSTEM[AVAILABLE_DISK_GB]} -lt ${MIN_DISK_GB} ]]; then
-        error "Espace disque insuffisant: ${SYSTEM[AVAILABLE_DISK_GB]}Go < ${MIN_DISK_GB}Go requis"
+        error "Insufficient disk space: ${SYSTEM[AVAILABLE_DISK_GB]}GB < ${MIN_DISK_GB}GB required"
         ((errors++))
     else
-        success "Espace disque: ${SYSTEM[AVAILABLE_DISK_GB]}Go (minimum: ${MIN_DISK_GB}Go)"
+        success "Disk space: ${SYSTEM[AVAILABLE_DISK_GB]}GB (minimum: ${MIN_DISK_GB}GB)"
     fi
     
-    info "Vérification des services existants..."
+    info "Checking for existing services..."
     for service in apache2 httpd nginx mysql mariadb; do
         if systemctl is-active --quiet "${service}" 2>/dev/null; then
-            warn "Le service ${service} est déjà en cours d'exécution"
+            warn "Service ${service} is already running"
         fi
     done
     
-    info "Vérification d'une installation GLPI existante..."
+    info "Checking for existing GLPI installation..."
     if [[ -d "${GLPI_INSTALL_DIR}" ]]; then
-        warn "Installation GLPI existante trouvée dans ${GLPI_INSTALL_DIR}"
+        warn "Existing GLPI installation found at ${GLPI_INSTALL_DIR}"
         if [[ "${FORCE}" != "true" ]]; then
-            if ! confirm "Sauvegarder et remplacer l'installation existante ?" "n"; then
-                fatal "Installation annulée"
+            if ! confirm "Backup and replace existing installation?" "n"; then
+                fatal "Installation cancelled"
             fi
         fi
     fi
     
-    info "Vérification des commandes requises..."
+    info "Checking required commands..."
     local required_cmds=(curl wget tar)
     for cmd in "${required_cmds[@]}"; do
         if ! command -v "${cmd}" &>/dev/null; then
-            warn "Commande requise non trouvée: ${cmd} (sera installée)"
+            warn "Required command not found: ${cmd} (will be installed)"
         fi
     done
     
     if [[ ${errors} -gt 0 && "${SKIP_CHECKS}" != "true" ]]; then
-        fatal "La vérification des prérequis a échoué avec ${errors} erreur(s)"
+        fatal "Requirements check failed with ${errors} error(s)"
     fi
     
-    success "Tous les prérequis sont vérifiés"
+    success "All requirements verified"
 }
 
 fetch_latest_version() {
-    print_step "Récupération de la Dernière Version GLPI"
+    print_step "Fetching Latest GLPI Version"
     
-    info "Interrogation de l'API GitHub..."
+    info "Querying GitHub API..."
     
     local api_response
     local max_retries=3
@@ -489,39 +489,39 @@ fetch_latest_version() {
             -H "Accept: application/vnd.github.v3+json" \
             "https://api.github.com/repos/glpi-project/glpi/releases/latest" 2>&1) && break
         ((retry++))
-        warn "Échec de la requête API, nouvelle tentative (${retry}/${max_retries})..."
+        warn "API request failed, retrying (${retry}/${max_retries})..."
         sleep 2
     done
     
     if [[ ${retry} -eq ${max_retries} ]]; then
-        fatal "Impossible de récupérer la version GLPI depuis l'API GitHub après ${max_retries} tentatives"
+        fatal "Failed to fetch GLPI version from GitHub API after ${max_retries} attempts"
     fi
     
     CONFIG[GLPI_VERSION]=$(echo "${api_response}" | grep -oP '"tag_name":\s*"\K[^"]+' | head -1)
     
     if [[ -z "${CONFIG[GLPI_VERSION]}" ]]; then
-        fatal "Impossible d'extraire la version GLPI de la réponse API"
+        fatal "Could not parse GLPI version from API response"
     fi
     
     CONFIG[GLPI_DOWNLOAD_URL]="https://github.com/glpi-project/glpi/releases/download/${CONFIG[GLPI_VERSION]}/glpi-${CONFIG[GLPI_VERSION]}.tgz"
     
-    info "Vérification de l'URL de téléchargement..."
+    info "Verifying download URL..."
     local http_code
     http_code=$(curl -sI -o /dev/null -w "%{http_code}" "${CONFIG[GLPI_DOWNLOAD_URL]}" 2>/dev/null)
     
     if [[ "${http_code}" != "200" && "${http_code}" != "302" ]]; then
-        fatal "Échec de la vérification de l'URL de téléchargement (HTTP ${http_code})"
+        fatal "Download URL verification failed (HTTP ${http_code})"
     fi
     
-    success "Dernière version: ${CONFIG[GLPI_VERSION]}"
-    debug "URL de téléchargement: ${CONFIG[GLPI_DOWNLOAD_URL]}"
+    success "Latest version: ${CONFIG[GLPI_VERSION]}"
+    debug "Download URL: ${CONFIG[GLPI_DOWNLOAD_URL]}"
 }
 
 install_packages_debian() {
-    info "Mise à jour des dépôts de paquets..."
+    info "Updating package repositories..."
     apt-get update -qq
     
-    info "Installation des paquets de base..."
+    info "Installing base packages..."
     DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
         apache2 \
         mariadb-server \
@@ -565,7 +565,7 @@ install_packages_debian() {
         "php${SYSTEM[PHP_VERSION]}-cas"
     )
     
-    info "Installation des paquets PHP ${SYSTEM[PHP_VERSION]}..."
+    info "Installing PHP ${SYSTEM[PHP_VERSION]} packages..."
     
     local total=${#php_packages[@]}
     local current=0
@@ -574,7 +574,7 @@ install_packages_debian() {
         ((current++))
         print_progress ${current} ${total}
         DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${pkg}" 2>/dev/null || {
-            warn "Le paquet ${pkg} n'est pas disponible, ignoré..."
+            warn "Package ${pkg} not available, skipping..."
         }
     done
     echo ""
@@ -587,7 +587,7 @@ install_packages_debian() {
 }
 
 install_packages_rhel() {
-    info "Configuration des dépôts..."
+    info "Configuring repositories..."
     
     if [[ "${SYSTEM[OS_NAME]}" != "fedora" ]]; then
         ${SYSTEM[PKG_MANAGER]} install -y epel-release 2>/dev/null || true
@@ -607,7 +607,7 @@ install_packages_rhel() {
         fi
     fi
     
-    info "Installation des paquets de base..."
+    info "Installing base packages..."
     ${SYSTEM[PKG_MANAGER]} install -y \
         httpd \
         mariadb-server \
@@ -650,7 +650,7 @@ install_packages_rhel() {
         php-common
     )
     
-    info "Installation des paquets PHP..."
+    info "Installing PHP packages..."
     
     local total=${#php_packages[@]}
     local current=0
@@ -664,7 +664,7 @@ install_packages_rhel() {
 }
 
 install_dependencies() {
-    print_step "Installation des Dépendances"
+    print_step "Installing Dependencies"
     
     save_state "installing_packages"
     
@@ -673,13 +673,13 @@ install_dependencies() {
         rhel)   install_packages_rhel ;;
     esac
     
-    add_rollback "info 'Les paquets nécessitent une suppression manuelle'"
+    add_rollback "info 'Packages require manual removal'"
     
-    success "Toutes les dépendances sont installées"
+    success "All dependencies installed"
 }
 
 configure_php() {
-    print_step "Configuration de PHP"
+    print_step "Configuring PHP"
     
     save_state "configuring_php"
     
@@ -699,11 +699,11 @@ configure_php() {
     fi
     
     if [[ ! -f "${php_ini}" ]]; then
-        warn "Fichier de configuration PHP introuvable, configuration ignorée"
+        warn "PHP configuration file not found, skipping PHP configuration"
         return
     fi
     
-    info "Configuration de ${php_ini}..."
+    info "Configuring ${php_ini}..."
     
     cp "${php_ini}" "${php_ini}.backup.$(date +%Y%m%d_%H%M%S)"
     add_rollback "mv '${php_ini}.backup.'* '${php_ini}' 2>/dev/null || true"
@@ -734,7 +734,7 @@ configure_php() {
         fi
     done
     
-    success "PHP configuré avec succès"
+    success "PHP configured successfully"
 }
 
 generate_secure_password() {
@@ -743,11 +743,11 @@ generate_secure_password() {
 }
 
 configure_database() {
-    print_step "Configuration de la Base de Données"
+    print_step "Configuring Database"
     
     save_state "configuring_database"
     
-    info "Démarrage du service MariaDB..."
+    info "Starting MariaDB service..."
     systemctl start mariadb 2>/dev/null || systemctl start mysql 2>/dev/null || true
     systemctl enable mariadb 2>/dev/null || systemctl enable mysql 2>/dev/null || true
     
@@ -755,64 +755,64 @@ configure_database() {
         CONFIG[DB_PASS]=$(generate_secure_password 24)
     fi
     
-    info "Création de la base de données et de l'utilisateur..."
+    info "Creating database and user..."
     
     mysql -e "CREATE DATABASE IF NOT EXISTS \`${CONFIG[DB_NAME]}\` 
               CHARACTER SET utf8mb4 
-              COLLATE utf8mb4_unicode_ci;" || fatal "Échec de la création de la base de données"
+              COLLATE utf8mb4_unicode_ci;" || fatal "Failed to create database"
     
     mysql -e "CREATE USER IF NOT EXISTS '${CONFIG[DB_USER]}'@'${CONFIG[DB_HOST]}' 
-              IDENTIFIED BY '${CONFIG[DB_PASS]}';" || fatal "Échec de la création de l'utilisateur"
+              IDENTIFIED BY '${CONFIG[DB_PASS]}';" || fatal "Failed to create database user"
     
     mysql -e "GRANT ALL PRIVILEGES ON \`${CONFIG[DB_NAME]}\`.* 
-              TO '${CONFIG[DB_USER]}'@'${CONFIG[DB_HOST]}';" || fatal "Échec de l'attribution des privilèges"
+              TO '${CONFIG[DB_USER]}'@'${CONFIG[DB_HOST]}';" || fatal "Failed to grant privileges"
     
     mysql -e "FLUSH PRIVILEGES;"
     
     add_rollback "mysql -e \"DROP DATABASE IF EXISTS \\\`${CONFIG[DB_NAME]}\\\`;\" 2>/dev/null || true"
     add_rollback "mysql -e \"DROP USER IF EXISTS '${CONFIG[DB_USER]}'@'${CONFIG[DB_HOST]}';\" 2>/dev/null || true"
     
-    info "Configuration du support des fuseaux horaires..."
+    info "Configuring timezone support..."
     mysql_tzinfo_to_sql /usr/share/zoneinfo 2>/dev/null | mysql mysql 2>/dev/null || true
     mysql -e "GRANT SELECT ON mysql.time_zone_name TO '${CONFIG[DB_USER]}'@'${CONFIG[DB_HOST]}';" 2>/dev/null || true
     mysql -e "FLUSH PRIVILEGES;"
     
-    success "Base de données configurée avec succès"
-    info "  ├─ Base de données: ${CONFIG[DB_NAME]}"
-    info "  ├─ Utilisateur: ${CONFIG[DB_USER]}"
-    info "  └─ Hôte: ${CONFIG[DB_HOST]}"
+    success "Database configured successfully"
+    info "  ├─ Database: ${CONFIG[DB_NAME]}"
+    info "  ├─ User: ${CONFIG[DB_USER]}"
+    info "  └─ Host: ${CONFIG[DB_HOST]}"
 }
 
 download_glpi() {
-    print_step "Téléchargement de GLPI ${CONFIG[GLPI_VERSION]}"
+    print_step "Downloading GLPI ${CONFIG[GLPI_VERSION]}"
     
     save_state "downloading_glpi"
     
     local temp_dir=$(mktemp -d)
     local archive="${temp_dir}/glpi.tgz"
     
-    info "Téléchargement depuis GitHub..."
+    info "Downloading from GitHub..."
     
     if ! wget --progress=bar:force:noscroll -O "${archive}" "${CONFIG[GLPI_DOWNLOAD_URL]}" 2>&1; then
         rm -rf "${temp_dir}"
-        fatal "Échec du téléchargement de GLPI"
+        fatal "Failed to download GLPI"
     fi
     
-    info "Vérification de l'intégrité de l'archive..."
+    info "Verifying archive integrity..."
     if ! tar -tzf "${archive}" &>/dev/null; then
         rm -rf "${temp_dir}"
-        fatal "L'archive téléchargée est corrompue"
+        fatal "Downloaded archive is corrupted"
     fi
     
     if [[ -d "${CONFIG[INSTALL_DIR]}" ]]; then
-        info "Sauvegarde de l'installation existante..."
+        info "Backing up existing installation..."
         local backup_path="${BACKUP_DIR}/glpi_backup_$(date +%Y%m%d_%H%M%S)"
         mv "${CONFIG[INSTALL_DIR]}" "${backup_path}"
         add_rollback "rm -rf '${CONFIG[INSTALL_DIR]}' && mv '${backup_path}' '${CONFIG[INSTALL_DIR]}'"
-        success "Sauvegarde créée: ${backup_path}"
+        success "Backup created: ${backup_path}"
     fi
     
-    info "Extraction de l'archive..."
+    info "Extracting archive..."
     tar -xzf "${archive}" -C "${temp_dir}"
     mv "${temp_dir}/glpi" "${CONFIG[INSTALL_DIR]}"
     
@@ -820,15 +820,15 @@ download_glpi() {
     
     add_rollback "rm -rf '${CONFIG[INSTALL_DIR]}'"
     
-    success "GLPI ${CONFIG[GLPI_VERSION]} téléchargé et extrait"
+    success "GLPI ${CONFIG[GLPI_VERSION]} downloaded and extracted"
 }
 
 configure_glpi_security() {
-    print_step "Configuration de la Sécurité GLPI"
+    print_step "Configuring GLPI Security"
     
     save_state "configuring_glpi"
     
-    info "Mise en place de la structure de répertoires sécurisée..."
+    info "Setting up secure directory structure..."
     
     mkdir -p "${GLPI_VAR_DIR}"/{files,marketplace}
     mkdir -p "${GLPI_VAR_DIR}/files"/{_cron,_dumps,_graphs,_lock,_pictures,_plugins,_rss,_sessions,_tmp,_uploads,_cache}
@@ -850,7 +850,7 @@ configure_glpi_security() {
         rm -rf "${CONFIG[INSTALL_DIR]}/config"
     fi
     
-    info "Création des fichiers de configuration..."
+    info "Creating configuration files..."
     
     cat > "${CONFIG[INSTALL_DIR]}/inc/downstream.php" << 'DOWNSTREAM'
 <?php
@@ -879,7 +879,7 @@ define('GLPI_UPLOAD_DIR', GLPI_VAR_DIR . '/_uploads');
 define('GLPI_CACHE_DIR', GLPI_VAR_DIR . '/_cache');
 LOCALDEFINE
 
-    info "Application des permissions..."
+    info "Setting permissions..."
     
     chown -R "${SYSTEM[WEB_USER]}:${SYSTEM[WEB_GROUP]}" "${CONFIG[INSTALL_DIR]}"
     chown -R "${SYSTEM[WEB_USER]}:${SYSTEM[WEB_GROUP]}" "${GLPI_VAR_DIR}"
@@ -894,7 +894,7 @@ LOCALDEFINE
     
     add_rollback "rm -rf '${GLPI_VAR_DIR}' '${GLPI_LOG_DIR}' '${GLPI_CONFIG_DIR}'"
     
-    success "Configuration de sécurité GLPI terminée"
+    success "GLPI security configuration completed"
 }
 
 generate_apache_config() {
@@ -994,7 +994,7 @@ APACHE_CONFIG
 }
 
 configure_webserver() {
-    print_step "Configuration du Serveur Web"
+    print_step "Configuring Web Server"
     
     save_state "configuring_webserver"
     
@@ -1010,8 +1010,8 @@ configure_webserver() {
         
         add_rollback "a2dissite glpi.conf; a2ensite 000-default.conf; rm -f '${config_file}'"
         
-        info "Test de la configuration Apache..."
-        apache2ctl configtest || fatal "Le test de configuration Apache a échoué"
+        info "Testing Apache configuration..."
+        apache2ctl configtest || fatal "Apache configuration test failed"
         
     else
         config_file="/etc/httpd/conf.d/glpi.conf"
@@ -1020,7 +1020,7 @@ configure_webserver() {
         add_rollback "rm -f '${config_file}'"
         
         if command -v getenforce &>/dev/null && [[ $(getenforce) != "Disabled" ]]; then
-            info "Configuration de SELinux..."
+            info "Configuring SELinux..."
             setsebool -P httpd_can_network_connect on 2>/dev/null || true
             setsebool -P httpd_can_network_connect_db on 2>/dev/null || true
             setsebool -P httpd_can_sendmail on 2>/dev/null || true
@@ -1030,36 +1030,36 @@ configure_webserver() {
             restorecon -Rv "${GLPI_LOG_DIR}" 2>/dev/null || true
         fi
         
-        info "Test de la configuration Apache..."
-        httpd -t || fatal "Le test de configuration Apache a échoué"
+        info "Testing Apache configuration..."
+        httpd -t || fatal "Apache configuration test failed"
     fi
     
-    success "Serveur web configuré avec succès"
+    success "Web server configured successfully"
 }
 
 configure_firewall() {
-    print_step "Configuration du Pare-feu"
+    print_step "Configuring Firewall"
     
     save_state "configuring_firewall"
     
     if command -v ufw &>/dev/null; then
-        info "Configuration du pare-feu UFW..."
+        info "Configuring UFW firewall..."
         ufw allow 80/tcp 2>/dev/null || true
         ufw allow 443/tcp 2>/dev/null || true
-        success "Règles UFW ajoutées"
+        success "UFW rules added"
     elif command -v firewall-cmd &>/dev/null; then
-        info "Configuration de firewalld..."
+        info "Configuring firewalld..."
         firewall-cmd --permanent --add-service=http 2>/dev/null || true
         firewall-cmd --permanent --add-service=https 2>/dev/null || true
         firewall-cmd --reload 2>/dev/null || true
-        success "Règles firewalld ajoutées"
+        success "Firewalld rules added"
     else
-        warn "Aucun pare-feu supporté détecté, configuration ignorée"
+        warn "No supported firewall detected, skipping configuration"
     fi
 }
 
 configure_cron() {
-    print_step "Configuration des Tâches Planifiées"
+    print_step "Configuring Scheduled Tasks"
     
     save_state "configuring_cron"
     
@@ -1077,43 +1077,43 @@ CRON
     
     add_rollback "rm -f '${cron_file}'"
     
-    success "Tâche cron configurée (exécution toutes les 2 minutes)"
+    success "Cron job configured (runs every 2 minutes)"
 }
 
 start_services() {
-    print_step "Démarrage des Services"
+    print_step "Starting Services"
     
     save_state "starting_services"
     
     local services=("${SYSTEM[WEB_SERVICE]}" "mariadb")
     
     for service in "${services[@]}"; do
-        info "Démarrage de ${service}..."
+        info "Starting ${service}..."
         systemctl restart "${service}" 2>/dev/null || systemctl restart mysql 2>/dev/null || true
         systemctl enable "${service}" 2>/dev/null || true
         
         if systemctl is-active --quiet "${service}" 2>/dev/null; then
-            success "${service} est en cours d'exécution"
+            success "${service} is running"
         else
-            warn "${service} pourrait ne pas fonctionner correctement"
+            warn "${service} may not be running properly"
         fi
     done
     
     if systemctl list-unit-files | grep -q "${SYSTEM[PHP_FPM_SERVICE]}"; then
-        info "Démarrage de ${SYSTEM[PHP_FPM_SERVICE]}..."
+        info "Starting ${SYSTEM[PHP_FPM_SERVICE]}..."
         systemctl restart "${SYSTEM[PHP_FPM_SERVICE]}"
         systemctl enable "${SYSTEM[PHP_FPM_SERVICE]}"
     fi
 }
 
 verify_installation() {
-    print_step "Vérification de l'Installation"
+    print_step "Verifying Installation"
     
     save_state "verifying"
     
     local errors=0
     
-    info "Vérification de la structure des fichiers..."
+    info "Checking file structure..."
     local required_paths=(
         "${CONFIG[INSTALL_DIR]}/public/index.php"
         "${CONFIG[INSTALL_DIR]}/inc/downstream.php"
@@ -1124,47 +1124,47 @@ verify_installation() {
     
     for path in "${required_paths[@]}"; do
         if [[ -e "${path}" ]]; then
-            debug "Trouvé: ${path}"
+            debug "Found: ${path}"
         else
-            error "Manquant: ${path}"
+            error "Missing: ${path}"
             ((errors++))
         fi
     done
     
-    info "Vérification des services..."
+    info "Checking services..."
     local services=("${SYSTEM[WEB_SERVICE]}")
     
     for service in "${services[@]}"; do
         if systemctl is-active --quiet "${service}" 2>/dev/null; then
-            debug "Service en cours d'exécution: ${service}"
+            debug "Service running: ${service}"
         else
-            error "Service arrêté: ${service}"
+            error "Service not running: ${service}"
             ((errors++))
         fi
     done
     
-    info "Vérification de la connexion à la base de données..."
+    info "Checking database connection..."
     if mysql -u"${CONFIG[DB_USER]}" -p"${CONFIG[DB_PASS]}" -e "USE ${CONFIG[DB_NAME]};" 2>/dev/null; then
-        debug "Connexion à la base de données réussie"
+        debug "Database connection successful"
     else
-        error "Échec de la connexion à la base de données"
+        error "Database connection failed"
         ((errors++))
     fi
     
-    info "Vérification de la réponse du serveur web..."
+    info "Checking web server response..."
     local http_code
     http_code=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost/glpi/" 2>/dev/null || echo "000")
     
     if [[ "${http_code}" =~ ^(200|301|302|303)$ ]]; then
-        debug "Le serveur web répond (HTTP ${http_code})"
+        debug "Web server responding (HTTP ${http_code})"
     else
-        warn "Le serveur web a retourné HTTP ${http_code}"
+        warn "Web server returned HTTP ${http_code}"
     fi
     
     if [[ ${errors} -gt 0 ]]; then
-        warn "Installation terminée avec ${errors} avertissement(s)"
+        warn "Installation completed with ${errors} warning(s)"
     else
-        success "Toutes les vérifications sont passées"
+        success "All verification checks passed"
     fi
 }
 
@@ -1173,42 +1173,42 @@ save_credentials() {
     
     cat > "${creds_file}" << CREDENTIALS
 ################################################################################
-# Identifiants d'Installation GLPI
-# Généré le: $(date)
-# Version du script: ${SCRIPT_VERSION}
+# GLPI Installation Credentials
+# Generated: $(date)
+# Script Version: ${SCRIPT_VERSION}
 ################################################################################
 
-# URL d'accès
+# Access URL
 URL=http://${SYSTEM[IP_ADDRESS]}/glpi
 VERSION=${CONFIG[GLPI_VERSION]}
 
-# Configuration de la base de données
+# Database Configuration
 DB_HOST=${CONFIG[DB_HOST]}
 DB_PORT=${CONFIG[DB_PORT]}
 DB_NAME=${CONFIG[DB_NAME]}
 DB_USER=${CONFIG[DB_USER]}
 DB_PASS=${CONFIG[DB_PASS]}
 
-# Structure des répertoires
+# Directory Structure
 INSTALL_DIR=${CONFIG[INSTALL_DIR]}
 VAR_DIR=${GLPI_VAR_DIR}
 LOG_DIR=${GLPI_LOG_DIR}
 CONFIG_DIR=${GLPI_CONFIG_DIR}
 
-# Comptes GLPI par défaut (À CHANGER IMMÉDIATEMENT !)
+# Default GLPI Accounts (CHANGE IMMEDIATELY!)
 # Super-Admin: glpi / glpi
 # Admin: tech / tech
 # Normal: normal / normal
 # Post-only: post-only / post-only
 
 ################################################################################
-# AVERTISSEMENT DE SÉCURITÉ: Changez tous les mots de passe par défaut !
+# SECURITY WARNING: Change all default passwords after first login!
 ################################################################################
 CREDENTIALS
     
     chmod 600 "${creds_file}"
     
-    debug "Identifiants sauvegardés dans ${creds_file}"
+    debug "Credentials saved to ${creds_file}"
 }
 
 print_summary() {
@@ -1221,36 +1221,36 @@ print_summary() {
     cat << 'SUCCESS_BANNER'
 ╔═══════════════════════════════════════════════════════════════════════════╗
 ║                                                                           ║
-║   ████████╗███████╗██████╗ ███╗   ███╗██╗███╗   ██╗███████╗██╗            ║
-║   ╚══██╔══╝██╔════╝██╔══██╗████╗ ████║██║████╗  ██║██╔════╝██║            ║
-║      ██║   █████╗  ██████╔╝██╔████╔██║██║██╔██╗ ██║█████╗  ██║            ║
-║      ██║   ██╔══╝  ██╔══██╗██║╚██╔╝██║██║██║╚██╗██║██╔══╝  ╚═╝            ║
-║      ██║   ███████╗██║  ██║██║ ╚═╝ ██║██║██║ ╚████║███████╗██╗            ║
-║      ╚═╝   ╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝╚═╝╚═╝  ╚═══╝╚══════╝╚═╝            ║
+║    ██████╗ ██████╗ ███╗   ███╗██████╗ ██╗     ███████╗████████╗███████╗   ║
+║   ██╔════╝██╔═══██╗████╗ ████║██╔══██╗██║     ██╔════╝╚══██╔══╝██╔════╝   ║
+║   ██║     ██║   ██║██╔████╔██║██████╔╝██║     █████╗     ██║   █████╗     ║
+║   ██║     ██║   ██║██║╚██╔╝██║██╔═══╝ ██║     ██╔══╝     ██║   ██╔══╝     ║
+║   ╚██████╗╚██████╔╝██║ ╚═╝ ██║██║     ███████╗███████╗   ██║   ███████╗   ║
+║    ╚═════╝ ╚═════╝ ╚═╝     ╚═╝╚═╝     ╚══════╝╚══════╝   ╚═╝   ╚══════╝   ║
 ║                                                                           ║
 ╚═══════════════════════════════════════════════════════════════════════════╝
 SUCCESS_BANNER
     echo -e "${C_RESET}"
     
     echo -e "${C_BOLD}${C_CYAN}═══════════════════════════════════════════════════════════════════════════${C_RESET}"
-    echo -e "${C_BOLD}                        RÉSUMÉ DE L'INSTALLATION${C_RESET}"
+    echo -e "${C_BOLD}                          INSTALLATION SUMMARY${C_RESET}"
     echo -e "${C_BOLD}${C_CYAN}═══════════════════════════════════════════════════════════════════════════${C_RESET}"
     echo ""
-    echo -e "  ${C_BOLD}URL d'accès:${C_RESET}       http://${SYSTEM[IP_ADDRESS]}/glpi"
-    echo -e "  ${C_BOLD}Version GLPI:${C_RESET}      ${CONFIG[GLPI_VERSION]}"
-    echo -e "  ${C_BOLD}Durée:${C_RESET}             $((duration / 60))m $((duration % 60))s"
+    echo -e "  ${C_BOLD}Access URL:${C_RESET}        http://${SYSTEM[IP_ADDRESS]}/glpi"
+    echo -e "  ${C_BOLD}GLPI Version:${C_RESET}      ${CONFIG[GLPI_VERSION]}"
+    echo -e "  ${C_BOLD}Duration:${C_RESET}          $((duration / 60))m $((duration % 60))s"
     echo ""
     echo -e "${C_BOLD}${C_CYAN}───────────────────────────────────────────────────────────────────────────${C_RESET}"
-    echo -e "${C_BOLD}                    CONFIGURATION BASE DE DONNÉES${C_RESET}"
+    echo -e "${C_BOLD}                        DATABASE CONFIGURATION${C_RESET}"
     echo -e "${C_BOLD}${C_CYAN}───────────────────────────────────────────────────────────────────────────${C_RESET}"
     echo ""
-    echo -e "  ${C_BOLD}Hôte:${C_RESET}              ${CONFIG[DB_HOST]}"
-    echo -e "  ${C_BOLD}Base de données:${C_RESET}   ${CONFIG[DB_NAME]}"
-    echo -e "  ${C_BOLD}Utilisateur:${C_RESET}       ${CONFIG[DB_USER]}"
-    echo -e "  ${C_BOLD}Mot de passe:${C_RESET}      ${CONFIG[DB_PASS]}"
+    echo -e "  ${C_BOLD}Host:${C_RESET}              ${CONFIG[DB_HOST]}"
+    echo -e "  ${C_BOLD}Database:${C_RESET}          ${CONFIG[DB_NAME]}"
+    echo -e "  ${C_BOLD}Username:${C_RESET}          ${CONFIG[DB_USER]}"
+    echo -e "  ${C_BOLD}Password:${C_RESET}          ${CONFIG[DB_PASS]}"
     echo ""
     echo -e "${C_BOLD}${C_CYAN}───────────────────────────────────────────────────────────────────────────${C_RESET}"
-    echo -e "${C_BOLD}                      COMPTES GLPI PAR DÉFAUT${C_RESET}"
+    echo -e "${C_BOLD}                        DEFAULT GLPI ACCOUNTS${C_RESET}"
     echo -e "${C_BOLD}${C_CYAN}───────────────────────────────────────────────────────────────────────────${C_RESET}"
     echo ""
     echo -e "  ${C_BOLD}Super-Admin:${C_RESET}       glpi / glpi"
@@ -1259,69 +1259,69 @@ SUCCESS_BANNER
     echo -e "  ${C_BOLD}Post-only:${C_RESET}         post-only / post-only"
     echo ""
     echo -e "${C_BOLD}${C_CYAN}───────────────────────────────────────────────────────────────────────────${C_RESET}"
-    echo -e "${C_BOLD}                         CHEMINS DES RÉPERTOIRES${C_RESET}"
+    echo -e "${C_BOLD}                           DIRECTORY PATHS${C_RESET}"
     echo -e "${C_BOLD}${C_CYAN}───────────────────────────────────────────────────────────────────────────${C_RESET}"
     echo ""
     echo -e "  ${C_BOLD}Application:${C_RESET}       ${CONFIG[INSTALL_DIR]}"
-    echo -e "  ${C_BOLD}Données:${C_RESET}           ${GLPI_VAR_DIR}"
-    echo -e "  ${C_BOLD}Journaux:${C_RESET}          ${GLPI_LOG_DIR}"
-    echo -e "  ${C_BOLD}Configuration:${C_RESET}     ${GLPI_CONFIG_DIR}"
+    echo -e "  ${C_BOLD}Data:${C_RESET}              ${GLPI_VAR_DIR}"
+    echo -e "  ${C_BOLD}Logs:${C_RESET}              ${GLPI_LOG_DIR}"
+    echo -e "  ${C_BOLD}Config:${C_RESET}            ${GLPI_CONFIG_DIR}"
     echo ""
     echo -e "${C_BOLD}${C_CYAN}═══════════════════════════════════════════════════════════════════════════${C_RESET}"
     echo ""
-    echo -e "  ${C_YELLOW}${C_BOLD}⚠  ACTIONS POST-INSTALLATION REQUISES:${C_RESET}"
+    echo -e "  ${C_YELLOW}${C_BOLD}⚠  POST-INSTALLATION ACTIONS REQUIRED:${C_RESET}"
     echo ""
-    echo -e "     1. Ouvrez ${C_BOLD}http://${SYSTEM[IP_ADDRESS]}/glpi${C_RESET} pour terminer l'assistant"
-    echo -e "     2. ${C_RED}${C_BOLD}CHANGEZ TOUS LES MOTS DE PASSE PAR DÉFAUT IMMÉDIATEMENT !${C_RESET}"
-    echo -e "     3. Supprimez le script d'installation: ${C_BOLD}rm ${CONFIG[INSTALL_DIR]}/install/install.php${C_RESET}"
-    echo -e "     4. Configurez HTTPS pour la production"
-    echo -e "     5. Consultez le guide de sécurisation"
+    echo -e "     1. Open ${C_BOLD}http://${SYSTEM[IP_ADDRESS]}/glpi${C_RESET} to complete setup wizard"
+    echo -e "     2. ${C_RED}${C_BOLD}CHANGE ALL DEFAULT PASSWORDS IMMEDIATELY!${C_RESET}"
+    echo -e "     3. Remove install script: ${C_BOLD}rm ${CONFIG[INSTALL_DIR]}/install/install.php${C_RESET}"
+    echo -e "     4. Configure HTTPS for production"
+    echo -e "     5. Review security hardening guide"
     echo ""
     echo -e "${C_BOLD}${C_CYAN}═══════════════════════════════════════════════════════════════════════════${C_RESET}"
     echo ""
-    echo -e "  ${C_GREEN}Identifiants sauvegardés dans:${C_RESET} /root/.glpi_credentials"
-    echo -e "  ${C_GREEN}Journal d'installation:${C_RESET}        ${LOG_FILE}"
+    echo -e "  ${C_GREEN}Credentials saved to:${C_RESET} /root/.glpi_credentials"
+    echo -e "  ${C_GREEN}Installation log:${C_RESET}    ${LOG_FILE}"
     echo ""
 }
 
 show_help() {
     cat << HELP
-${C_BOLD}Installateur Automatique GLPI Entreprise v${SCRIPT_VERSION}${C_RESET}
+${C_BOLD}GLPI Auto-Installer v${SCRIPT_VERSION}${C_RESET}
 
-${C_BOLD}UTILISATION:${C_RESET}
+${C_BOLD}USAGE:${C_RESET}
     ${SCRIPT_NAME} [OPTIONS]
 
 ${C_BOLD}OPTIONS:${C_RESET}
-    -h, --help              Afficher ce message d'aide
-    -v, --verbose           Activer le mode verbeux
-    -y, --yes               Mode automatique (répond oui à toutes les questions)
-    -f, --force             Forcer l'installation même sur les systèmes non supportés
-    -d, --dry-run           Afficher ce qui serait fait sans effectuer de modifications
-    --skip-checks           Ignorer la vérification des prérequis
-    --db-name NOM           Définir le nom de la base de données (défaut: glpi_db)
-    --db-user UTILISATEUR   Définir l'utilisateur de la base de données (défaut: glpi_user)
-    --db-pass MOT_DE_PASSE  Définir le mot de passe (auto-généré si non défini)
-    --timezone FUSEAU       Définir le fuseau horaire (défaut: Europe/Paris)
-    --domain DOMAINE        Définir le nom de domaine du serveur
-    --version               Afficher la version du script
+    -h, --help              Show this help message
+    -v, --verbose           Enable verbose output
+    -y, --yes               Unattended mode (answer yes to all prompts)
+    -f, --force             Force installation on unsupported systems
+    -d, --dry-run           Show what would be done without making changes
+    --skip-checks           Skip system requirements verification
+    --db-name NAME          Set database name (default: glpi_db)
+    --db-user USER          Set database user (default: glpi_user)
+    --db-pass PASS          Set database password (auto-generated if not set)
+    --timezone TZ           Set timezone (default: Europe/Paris)
+    --domain DOMAIN         Set server domain name
+    --version               Show script version
 
-${C_BOLD}EXEMPLES:${C_RESET}
-    sudo ${SCRIPT_NAME}                          Installation interactive
-    sudo ${SCRIPT_NAME} -y                       Installation automatique
-    sudo ${SCRIPT_NAME} --db-name mabase         Nom de base de données personnalisé
-    sudo ${SCRIPT_NAME} -v --domain glpi.exemple.fr
+${C_BOLD}EXAMPLES:${C_RESET}
+    sudo ${SCRIPT_NAME}                          Interactive installation
+    sudo ${SCRIPT_NAME} -y                       Unattended installation
+    sudo ${SCRIPT_NAME} --db-name myglpi         Custom database name
+    sudo ${SCRIPT_NAME} -v --domain glpi.example.com
 
-${C_BOLD}SYSTÈMES SUPPORTÉS:${C_RESET}
+${C_BOLD}SUPPORTED SYSTEMS:${C_RESET}
     - Debian 10, 11, 12
     - Ubuntu 20.04, 22.04, 24.04
     - RHEL/CentOS/Rocky/AlmaLinux 8, 9
     - Fedora 38, 39, 40
 
-${C_BOLD}AUTEUR:${C_RESET}
-    Kofysh
+${C_BOLD}AUTHOR:${C_RESET}
+    Kofysh - https://github.com/Kofysh
 
 ${C_BOLD}DOCUMENTATION:${C_RESET}
-    https://glpi-project.org/documentation/
+    https://github.com/Kofysh/GLPI-Auto-Install
 
 HELP
 }
@@ -1374,11 +1374,11 @@ parse_arguments() {
                 shift 2
                 ;;
             --version)
-                echo "Installateur GLPI v${SCRIPT_VERSION}"
+                echo "GLPI Auto-Installer v${SCRIPT_VERSION}"
                 exit 0
                 ;;
             *)
-                error "Option inconnue: $1"
+                error "Unknown option: $1"
                 show_help
                 exit 1
                 ;;
@@ -1395,11 +1395,11 @@ main() {
     init_logging
     acquire_lock
     
-    info "Démarrage de l'installation de GLPI..."
-    info "Fichier journal: ${LOG_FILE}"
+    info "Starting GLPI installation..."
+    info "Log file: ${LOG_FILE}"
     
     if [[ "${DRY_RUN}" == "true" ]]; then
-        warn "MODE SIMULATION - Aucune modification ne sera effectuée"
+        warn "DRY RUN MODE - No changes will be made"
     fi
     
     check_network
@@ -1410,15 +1410,15 @@ main() {
     if [[ "${DRY_RUN}" != "true" ]]; then
         if [[ "${UNATTENDED}" != "true" ]]; then
             echo ""
-            echo -e "${C_BOLD}Configuration de l'installation:${C_RESET}"
-            echo -e "  Version GLPI:        ${CONFIG[GLPI_VERSION]}"
-            echo -e "  Base de données:     ${CONFIG[DB_NAME]}"
-            echo -e "  Fuseau horaire:      ${CONFIG[TIMEZONE]}"
-            echo -e "  Chemin installation: ${CONFIG[INSTALL_DIR]}"
+            echo -e "${C_BOLD}Installation Configuration:${C_RESET}"
+            echo -e "  GLPI Version:    ${CONFIG[GLPI_VERSION]}"
+            echo -e "  Database:        ${CONFIG[DB_NAME]}"
+            echo -e "  Timezone:        ${CONFIG[TIMEZONE]}"
+            echo -e "  Install Path:    ${CONFIG[INSTALL_DIR]}"
             echo ""
             
-            if ! confirm "Procéder à l'installation ?" "o"; then
-                fatal "Installation annulée par l'utilisateur"
+            if ! confirm "Proceed with installation?" "y"; then
+                fatal "Installation cancelled by user"
             fi
         fi
         
@@ -1435,17 +1435,17 @@ main() {
         save_credentials
         print_summary
     else
-        success "Simulation terminée avec succès"
-        info "Les étapes suivantes seraient exécutées:"
-        echo "  1. Installation des paquets système"
-        echo "  2. Configuration de PHP"
-        echo "  3. Configuration de la base de données MariaDB"
-        echo "  4. Téléchargement de GLPI ${CONFIG[GLPI_VERSION]}"
-        echo "  5. Configuration des paramètres de sécurité"
-        echo "  6. Configuration du serveur web Apache"
-        echo "  7. Configuration des règles du pare-feu"
-        echo "  8. Configuration des tâches cron"
-        echo "  9. Démarrage et activation des services"
+        success "Dry run completed successfully"
+        info "The following steps would be executed:"
+        echo "  1. Install system packages"
+        echo "  2. Configure PHP"
+        echo "  3. Setup MariaDB database"
+        echo "  4. Download GLPI ${CONFIG[GLPI_VERSION]}"
+        echo "  5. Configure security settings"
+        echo "  6. Setup Apache web server"
+        echo "  7. Configure firewall rules"
+        echo "  8. Setup cron jobs"
+        echo "  9. Start and enable services"
     fi
 }
 
