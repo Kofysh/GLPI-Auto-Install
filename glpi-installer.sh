@@ -16,7 +16,7 @@ readonly LOCK_FILE="/var/run/glpi-installer.lock"
 readonly BACKUP_DIR="/var/backups/glpi-installer"
 readonly STATE_FILE="/tmp/glpi_install_state_${SCRIPT_PID}"
 
-readonly GLPI_INSTALL_DIR="/var/www/html/glpi"
+readonly GLPI_INSTALL_DIR="/var/www/glpi"
 readonly GLPI_VAR_DIR="/var/lib/glpi"
 readonly GLPI_LOG_DIR="/var/log/glpi"
 readonly GLPI_CONFIG_DIR="/etc/glpi"
@@ -72,6 +72,9 @@ declare DRY_RUN=false
 declare FORCE=false
 declare UNATTENDED=false
 declare SKIP_CHECKS=false
+declare UNINSTALL_MODE=false
+declare KEEP_DATABASE=false
+declare KEEP_PACKAGES=false
 
 readonly C_RESET='\033[0m'
 readonly C_BOLD='\033[1m'
@@ -1163,7 +1166,7 @@ verify_installation() {
     
     info "Checking web server response..."
     local http_code
-    http_code=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost/glpi/" 2>/dev/null || echo "000")
+    http_code=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost/" 2>/dev/null || echo "000")
     
     if [[ "${http_code}" =~ ^(200|301|302|303)$ ]]; then
         debug "Web server responding (HTTP ${http_code})"
@@ -1189,7 +1192,7 @@ save_credentials() {
 ################################################################################
 
 # Access URL
-URL=http://${SYSTEM[IP_ADDRESS]}/glpi
+URL=http://${SYSTEM[IP_ADDRESS]}
 VERSION=${CONFIG[GLPI_VERSION]}
 
 # Database Configuration
@@ -1246,7 +1249,7 @@ SUCCESS_BANNER
     echo -e "${C_BOLD}                          INSTALLATION SUMMARY${C_RESET}"
     echo -e "${C_BOLD}${C_CYAN}═══════════════════════════════════════════════════════════════════════════${C_RESET}"
     echo ""
-    echo -e "  ${C_BOLD}Access URL:${C_RESET}        http://${SYSTEM[IP_ADDRESS]}/glpi"
+    echo -e "  ${C_BOLD}Access URL:${C_RESET}        http://${SYSTEM[IP_ADDRESS]}"
     echo -e "  ${C_BOLD}GLPI Version:${C_RESET}      ${CONFIG[GLPI_VERSION]}"
     echo -e "  ${C_BOLD}Duration:${C_RESET}          $((duration / 60))m $((duration % 60))s"
     echo ""
@@ -1281,7 +1284,7 @@ SUCCESS_BANNER
     echo ""
     echo -e "  ${C_YELLOW}${C_BOLD}⚠  POST-INSTALLATION ACTIONS REQUIRED:${C_RESET}"
     echo ""
-    echo -e "     1. Open ${C_BOLD}http://${SYSTEM[IP_ADDRESS]}/glpi${C_RESET} to complete setup wizard"
+    echo -e "     1. Open ${C_BOLD}http://${SYSTEM[IP_ADDRESS]}${C_RESET} to complete setup wizard"
     echo -e "     2. ${C_RED}${C_BOLD}CHANGE ALL DEFAULT PASSWORDS IMMEDIATELY!${C_RESET}"
     echo -e "     3. Remove install script: ${C_BOLD}rm ${CONFIG[INSTALL_DIR]}/install/install.php${C_RESET}"
     echo -e "     4. Configure HTTPS for production"
@@ -1294,6 +1297,214 @@ SUCCESS_BANNER
     echo ""
 }
 
+uninstall_glpi() {
+    print_banner
+    
+    echo -e "${C_RED}${C_BOLD}"
+    cat << 'UNINSTALL_BANNER'
+╔═══════════════════════════════════════════════════════════════════════════╗
+║                                                                           ║
+║   ██╗   ██╗███╗   ██╗██╗███╗   ██╗███████╗████████╗ █████╗ ██╗     ██╗    ║
+║   ██║   ██║████╗  ██║██║████╗  ██║██╔════╝╚══██╔══╝██╔══██╗██║     ██║    ║
+║   ██║   ██║██╔██╗ ██║██║██╔██╗ ██║███████╗   ██║   ███████║██║     ██║    ║
+║   ██║   ██║██║╚██╗██║██║██║╚██╗██║╚════██║   ██║   ██╔══██║██║     ██║    ║
+║   ╚██████╔╝██║ ╚████║██║██║ ╚████║███████║   ██║   ██║  ██║███████╗███████╗║
+║    ╚═════╝ ╚═╝  ╚═══╝╚═╝╚═╝  ╚═══╝╚══════╝   ╚═╝   ╚═╝  ╚═╝╚══════╝╚══════╝║
+║                                                                           ║
+╚═══════════════════════════════════════════════════════════════════════════╝
+UNINSTALL_BANNER
+    echo -e "${C_RESET}"
+    
+    check_root
+    
+    warn "This will completely remove GLPI from your system!"
+    echo ""
+    
+    if [[ "${KEEP_DATABASE}" == "false" ]]; then
+        warn "The database will be DELETED!"
+    else
+        info "Database will be kept (--keep-db)"
+    fi
+    
+    if [[ "${KEEP_PACKAGES}" == "false" ]]; then
+        warn "Apache, MariaDB, and PHP packages will be REMOVED!"
+    else
+        info "Packages will be kept (--keep-packages)"
+    fi
+    
+    echo ""
+    
+    if [[ "${UNATTENDED}" != "true" ]]; then
+        if ! confirm "Are you sure you want to uninstall GLPI?" "n"; then
+            info "Uninstallation cancelled"
+            exit 0
+        fi
+        
+        echo ""
+        read -rp "  ${C_YELLOW}?${C_RESET} Type 'UNINSTALL' to confirm: " confirmation </dev/tty 2>/dev/null || confirmation="UNINSTALL"
+        if [[ "${confirmation}" != "UNINSTALL" ]]; then
+            info "Uninstallation cancelled"
+            exit 0
+        fi
+    fi
+    
+    echo ""
+    info "Starting GLPI uninstallation..."
+    
+    # Detect OS
+    if [[ -f /etc/os-release ]]; then
+        source /etc/os-release
+        case "${ID}" in
+            debian|ubuntu)
+                SYSTEM[OS_FAMILY]="debian"
+                SYSTEM[WEB_SERVICE]="apache2"
+                ;;
+            rhel|centos|rocky|almalinux|fedora)
+                SYSTEM[OS_FAMILY]="rhel"
+                SYSTEM[WEB_SERVICE]="httpd"
+                ;;
+        esac
+    fi
+    
+    # Stop services
+    info "Stopping services..."
+    systemctl stop "${SYSTEM[WEB_SERVICE]}" 2>/dev/null || true
+    systemctl stop mariadb 2>/dev/null || true
+    systemctl stop mysql 2>/dev/null || true
+    success "Services stopped"
+    
+    # Remove GLPI files
+    info "Removing GLPI files..."
+    
+    if [[ -d "${GLPI_INSTALL_DIR}" ]]; then
+        rm -rf "${GLPI_INSTALL_DIR}"
+        success "Removed: ${GLPI_INSTALL_DIR}"
+    fi
+    
+    if [[ -d "${GLPI_VAR_DIR}" ]]; then
+        rm -rf "${GLPI_VAR_DIR}"
+        success "Removed: ${GLPI_VAR_DIR}"
+    fi
+    
+    if [[ -d "${GLPI_LOG_DIR}" ]]; then
+        rm -rf "${GLPI_LOG_DIR}"
+        success "Removed: ${GLPI_LOG_DIR}"
+    fi
+    
+    if [[ -d "${GLPI_CONFIG_DIR}" ]]; then
+        rm -rf "${GLPI_CONFIG_DIR}"
+        success "Removed: ${GLPI_CONFIG_DIR}"
+    fi
+    
+    # Remove Apache config
+    info "Removing Apache configuration..."
+    if [[ "${SYSTEM[OS_FAMILY]}" == "debian" ]]; then
+        a2dissite glpi.conf 2>/dev/null || true
+        rm -f /etc/apache2/sites-available/glpi.conf
+        rm -f /etc/apache2/sites-enabled/glpi.conf
+        a2ensite 000-default.conf 2>/dev/null || true
+    else
+        rm -f /etc/httpd/conf.d/glpi.conf
+    fi
+    success "Apache configuration removed"
+    
+    # Remove cron job
+    info "Removing cron job..."
+    rm -f /etc/cron.d/glpi
+    success "Cron job removed"
+    
+    # Remove database
+    if [[ "${KEEP_DATABASE}" == "false" ]]; then
+        info "Removing database..."
+        
+        # Try to get credentials from saved file
+        local db_name="${CONFIG[DB_NAME]}"
+        local db_user="${CONFIG[DB_USER]}"
+        
+        if [[ -f /root/.glpi_credentials ]]; then
+            source /root/.glpi_credentials 2>/dev/null || true
+            db_name="${DB_NAME:-${db_name}}"
+            db_user="${DB_USER:-${db_user}}"
+        fi
+        
+        # Start MariaDB temporarily to drop database
+        systemctl start mariadb 2>/dev/null || systemctl start mysql 2>/dev/null || true
+        sleep 2
+        
+        mysql -e "DROP DATABASE IF EXISTS \`${db_name}\`;" 2>/dev/null || true
+        mysql -e "DROP USER IF EXISTS '${db_user}'@'localhost';" 2>/dev/null || true
+        mysql -e "FLUSH PRIVILEGES;" 2>/dev/null || true
+        
+        success "Database '${db_name}' and user '${db_user}' removed"
+    else
+        info "Database kept as requested"
+    fi
+    
+    # Remove packages
+    if [[ "${KEEP_PACKAGES}" == "false" ]]; then
+        info "Removing packages..."
+        
+        if [[ "${SYSTEM[OS_FAMILY]}" == "debian" ]]; then
+            systemctl stop apache2 mariadb 2>/dev/null || true
+            systemctl disable apache2 mariadb 2>/dev/null || true
+            
+            DEBIAN_FRONTEND=noninteractive apt-get purge -y -qq \
+                apache2 apache2-* \
+                mariadb-server mariadb-client mariadb-* \
+                php* libapache2-mod-php* 2>/dev/null || true
+            
+            apt-get autoremove -y -qq 2>/dev/null || true
+            apt-get clean 2>/dev/null || true
+        else
+            systemctl stop httpd mariadb 2>/dev/null || true
+            systemctl disable httpd mariadb 2>/dev/null || true
+            
+            dnf remove -y httpd mariadb-server mariadb php php-* 2>/dev/null || \
+            yum remove -y httpd mariadb-server mariadb php php-* 2>/dev/null || true
+        fi
+        
+        success "Packages removed"
+    else
+        info "Packages kept as requested"
+        # Restart services if keeping packages
+        systemctl start "${SYSTEM[WEB_SERVICE]}" 2>/dev/null || true
+        systemctl start mariadb 2>/dev/null || systemctl start mysql 2>/dev/null || true
+    fi
+    
+    # Remove credentials file
+    info "Removing credentials file..."
+    rm -f /root/.glpi_credentials
+    success "Credentials file removed"
+    
+    # Remove installer logs (optional)
+    if [[ "${UNATTENDED}" == "true" ]] || confirm "Remove installation logs?" "n"; then
+        rm -rf "${LOG_DIR}"
+        success "Installation logs removed"
+    fi
+    
+    echo ""
+    echo -e "${C_GREEN}${C_BOLD}"
+    cat << 'DONE_BANNER'
+╔═══════════════════════════════════════════════════════════════════════════╗
+║                      GLPI UNINSTALLATION COMPLETE                         ║
+╚═══════════════════════════════════════════════════════════════════════════╝
+DONE_BANNER
+    echo -e "${C_RESET}"
+    
+    echo ""
+    success "GLPI has been completely removed from your system"
+    
+    if [[ "${KEEP_DATABASE}" == "true" ]]; then
+        info "Note: Database was kept as requested"
+    fi
+    
+    if [[ "${KEEP_PACKAGES}" == "true" ]]; then
+        info "Note: Packages were kept as requested"
+    fi
+    
+    echo ""
+}
+
 show_help() {
     cat << HELP
 ${C_BOLD}GLPI Auto-Installer v${SCRIPT_VERSION}${C_RESET}
@@ -1301,7 +1512,7 @@ ${C_BOLD}GLPI Auto-Installer v${SCRIPT_VERSION}${C_RESET}
 ${C_BOLD}USAGE:${C_RESET}
     ${SCRIPT_NAME_BASE} [OPTIONS]
 
-${C_BOLD}OPTIONS:${C_RESET}
+${C_BOLD}INSTALL OPTIONS:${C_RESET}
     -h, --help              Show this help message
     -v, --verbose           Enable verbose output
     -y, --yes               Unattended mode (answer yes to all prompts)
@@ -1315,11 +1526,23 @@ ${C_BOLD}OPTIONS:${C_RESET}
     --domain DOMAIN         Set server domain name
     --version               Show script version
 
+${C_BOLD}UNINSTALL OPTIONS:${C_RESET}
+    --uninstall             Uninstall GLPI completely
+    --keep-db               Keep database when uninstalling
+    --keep-packages         Keep Apache, MariaDB, PHP packages when uninstalling
+
 ${C_BOLD}EXAMPLES:${C_RESET}
+    ${C_BOLD}Install:${C_RESET}
     sudo ${SCRIPT_NAME_BASE}                          Interactive installation
     sudo ${SCRIPT_NAME_BASE} -y                       Unattended installation
     sudo ${SCRIPT_NAME_BASE} --db-name myglpi         Custom database name
     sudo ${SCRIPT_NAME_BASE} -v --domain glpi.example.com
+
+    ${C_BOLD}Uninstall:${C_RESET}
+    sudo ${SCRIPT_NAME_BASE} --uninstall              Full uninstall (interactive)
+    sudo ${SCRIPT_NAME_BASE} --uninstall -y           Full uninstall (no prompts)
+    sudo ${SCRIPT_NAME_BASE} --uninstall --keep-db    Uninstall but keep database
+    sudo ${SCRIPT_NAME_BASE} --uninstall --keep-packages  Keep LAMP stack
 
 ${C_BOLD}SUPPORTED SYSTEMS:${C_RESET}
     - Debian 10, 11, 12, 13
@@ -1363,6 +1586,18 @@ parse_arguments() {
                 SKIP_CHECKS=true
                 shift
                 ;;
+            --uninstall)
+                UNINSTALL_MODE=true
+                shift
+                ;;
+            --keep-db)
+                KEEP_DATABASE=true
+                shift
+                ;;
+            --keep-packages)
+                KEEP_PACKAGES=true
+                shift
+                ;;
             --db-name)
                 CONFIG[DB_NAME]="$2"
                 shift 2
@@ -1402,6 +1637,12 @@ main() {
     # Auto-detect non-interactive mode (piped input)
     if [[ ! -t 0 ]]; then
         UNATTENDED=true
+    fi
+    
+    # Handle uninstall mode
+    if [[ "${UNINSTALL_MODE}" == "true" ]]; then
+        uninstall_glpi
+        exit 0
     fi
     
     print_banner
