@@ -143,7 +143,7 @@ BANNER
 }
 
 print_step() {
-    ((CURRENT_STEP++))
+    ((CURRENT_STEP++)) || true
     local title="$1"
     local width=70
     local line=$(printf '═%.0s' $(seq 1 $width))
@@ -301,11 +301,11 @@ check_network() {
     local reachable=0
     
     if curl -s --connect-timeout 5 -o /dev/null "https://github.com" </dev/null 2>/dev/null; then
-        ((reachable++))
+        reachable=1
     elif curl -s --connect-timeout 5 -o /dev/null "https://api.github.com" </dev/null 2>/dev/null; then
-        ((reachable++))
+        reachable=1
     elif ping -c 1 -W 3 "1.1.1.1" </dev/null &>/dev/null; then
-        ((reachable++))
+        reachable=1
     fi
     
     if [[ ${reachable} -eq 0 ]]; then
@@ -437,7 +437,7 @@ check_requirements() {
     info "Checking memory requirements..."
     if [[ ${SYSTEM[TOTAL_MEMORY_MB]} -lt ${MIN_MEMORY_MB} ]]; then
         error "Insufficient memory: ${SYSTEM[TOTAL_MEMORY_MB]}MB < ${MIN_MEMORY_MB}MB required"
-        ((errors++))
+        ((errors++)) || true
     else
         success "Memory: ${SYSTEM[TOTAL_MEMORY_MB]}MB (minimum: ${MIN_MEMORY_MB}MB)"
     fi
@@ -445,7 +445,7 @@ check_requirements() {
     info "Checking disk space..."
     if [[ ${SYSTEM[AVAILABLE_DISK_GB]} -lt ${MIN_DISK_GB} ]]; then
         error "Insufficient disk space: ${SYSTEM[AVAILABLE_DISK_GB]}GB < ${MIN_DISK_GB}GB required"
-        ((errors++))
+        ((errors++)) || true
     else
         success "Disk space: ${SYSTEM[AVAILABLE_DISK_GB]}GB (minimum: ${MIN_DISK_GB}GB)"
     fi
@@ -495,7 +495,7 @@ fetch_latest_version() {
         api_response=$(curl -sS --connect-timeout 10 --max-time 30 \
             -H "Accept: application/vnd.github.v3+json" \
             "https://api.github.com/repos/glpi-project/glpi/releases/latest" 2>&1) && break
-        ((retry++))
+        ((retry++)) || true
         warn "API request failed, retrying (${retry}/${max_retries})..."
         sleep 2
     done
@@ -578,7 +578,7 @@ install_packages_debian() {
     local current=0
     
     for pkg in "${php_packages[@]}"; do
-        ((current++))
+        ((current++)) || true
         print_progress ${current} ${total}
         DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${pkg}" 2>/dev/null || {
             warn "Package ${pkg} not available, skipping..."
@@ -663,7 +663,7 @@ install_packages_rhel() {
     local current=0
     
     for pkg in "${php_packages[@]}"; do
-        ((current++))
+        ((current++)) || true
         print_progress ${current} ${total}
         ${SYSTEM[PKG_MANAGER]} install -y "${pkg}" 2>/dev/null || true
     done
@@ -1134,7 +1134,7 @@ verify_installation() {
             debug "Found: ${path}"
         else
             error "Missing: ${path}"
-            ((errors++))
+            ((errors++)) || true
         fi
     done
     
@@ -1146,7 +1146,7 @@ verify_installation() {
             debug "Service running: ${service}"
         else
             error "Service not running: ${service}"
-            ((errors++))
+            ((errors++)) || true
         fi
     done
     
@@ -1155,7 +1155,7 @@ verify_installation() {
         debug "Database connection successful"
     else
         error "Database connection failed"
-        ((errors++))
+        ((errors++)) || true
     fi
     
     info "Checking web server response..."
