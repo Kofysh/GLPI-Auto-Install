@@ -22,7 +22,7 @@ readonly GLPI_CONFIG_DIR="/etc/glpi"
 readonly MIN_MEMORY_MB=1024
 readonly MIN_DISK_GB=5
 readonly MIN_PHP_VERSION="7.4"
-readonly SUPPORTED_OS=("debian:10,11,12" "ubuntu:20.04,22.04,24.04" "rhel:8,9" "centos:8,9" "rocky:8,9" "almalinux:8,9" "fedora:38,39,40")
+readonly SUPPORTED_OS=("debian:10,11,12,13" "ubuntu:20.04,22.04,24.04" "rhel:8,9" "centos:8,9" "rocky:8,9" "almalinux:8,9" "fedora:38,39,40,41")
 
 declare -A CONFIG=(
     [GLPI_VERSION]=""
@@ -386,7 +386,8 @@ detect_system() {
                         10) SYSTEM[PHP_VERSION]="7.3" ;;
                         11) SYSTEM[PHP_VERSION]="7.4" ;;
                         12) SYSTEM[PHP_VERSION]="8.2" ;;
-                        *) SYSTEM[PHP_VERSION]="8.2" ;;
+                        13) SYSTEM[PHP_VERSION]="8.3" ;;
+                        *) SYSTEM[PHP_VERSION]="8.3" ;;
                     esac
                     ;;
                 ubuntu)
@@ -1312,10 +1313,10 @@ ${C_BOLD}EXAMPLES:${C_RESET}
     sudo ${SCRIPT_NAME} -v --domain glpi.example.com
 
 ${C_BOLD}SUPPORTED SYSTEMS:${C_RESET}
-    - Debian 10, 11, 12
+    - Debian 10, 11, 12, 13
     - Ubuntu 20.04, 22.04, 24.04
     - RHEL/CentOS/Rocky/AlmaLinux 8, 9
-    - Fedora 38, 39, 40
+    - Fedora 38, 39, 40, 41
 
 ${C_BOLD}AUTHOR:${C_RESET}
     Kofysh - https://github.com/Kofysh
