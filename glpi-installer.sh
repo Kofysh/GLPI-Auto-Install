@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 
-set -Eeuo pipefail
+set -Eeo pipefail
 
-readonly SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
+readonly SCRIPT_NAME="${BASH_SOURCE[0]:-glpi-installer.sh}"
+readonly SCRIPT_NAME_BASE="$(basename "${SCRIPT_NAME_BASE}")"
 readonly SCRIPT_VERSION="4.0.0"
-readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR="$(cd "$(dirname "${SCRIPT_NAME_BASE}")" 2>/dev/null && pwd || echo "/tmp")"
 readonly SCRIPT_PID=$$
 readonly START_TIME=$(date +%s)
 
@@ -19,8 +20,8 @@ readonly GLPI_VAR_DIR="/var/lib/glpi"
 readonly GLPI_LOG_DIR="/var/log/glpi"
 readonly GLPI_CONFIG_DIR="/etc/glpi"
 
-readonly MIN_MEMORY_MB=1024
-readonly MIN_DISK_GB=5
+readonly MIN_MEMORY_MB=512
+readonly MIN_DISK_GB=2
 readonly MIN_PHP_VERSION="7.4"
 readonly SUPPORTED_OS=("debian:10,11,12,13" "ubuntu:20.04,22.04,24.04" "rhel:8,9" "centos:8,9" "rocky:8,9" "almalinux:8,9" "fedora:38,39,40,41")
 
@@ -290,7 +291,7 @@ trap 'fatal "Installation interrupted by user"' INT TERM
 
 check_root() {
     if [[ ${EUID} -ne 0 ]]; then
-        fatal "This script must be run as root. Use: sudo ${SCRIPT_NAME}"
+        fatal "This script must be run as root. Use: sudo ${SCRIPT_NAME_BASE}"
     fi
     debug "Root privileges confirmed"
 }
@@ -1296,7 +1297,7 @@ show_help() {
 ${C_BOLD}GLPI Auto-Installer v${SCRIPT_VERSION}${C_RESET}
 
 ${C_BOLD}USAGE:${C_RESET}
-    ${SCRIPT_NAME} [OPTIONS]
+    ${SCRIPT_NAME_BASE} [OPTIONS]
 
 ${C_BOLD}OPTIONS:${C_RESET}
     -h, --help              Show this help message
@@ -1313,10 +1314,10 @@ ${C_BOLD}OPTIONS:${C_RESET}
     --version               Show script version
 
 ${C_BOLD}EXAMPLES:${C_RESET}
-    sudo ${SCRIPT_NAME}                          Interactive installation
-    sudo ${SCRIPT_NAME} -y                       Unattended installation
-    sudo ${SCRIPT_NAME} --db-name myglpi         Custom database name
-    sudo ${SCRIPT_NAME} -v --domain glpi.example.com
+    sudo ${SCRIPT_NAME_BASE}                          Interactive installation
+    sudo ${SCRIPT_NAME_BASE} -y                       Unattended installation
+    sudo ${SCRIPT_NAME_BASE} --db-name myglpi         Custom database name
+    sudo ${SCRIPT_NAME_BASE} -v --domain glpi.example.com
 
 ${C_BOLD}SUPPORTED SYSTEMS:${C_RESET}
     - Debian 10, 11, 12, 13
