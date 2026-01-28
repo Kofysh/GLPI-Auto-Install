@@ -388,6 +388,7 @@ install_packages() {
         "php${SYSTEM[PHP_VERSION]}-bz2"
         "php${SYSTEM[PHP_VERSION]}-opcache"
         "php${SYSTEM[PHP_VERSION]}-cli"
+        "php${SYSTEM[PHP_VERSION]}-bcmath"
         "libapache2-mod-php${SYSTEM[PHP_VERSION]}"
     )
     
