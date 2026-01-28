@@ -913,12 +913,18 @@ LOCALDEFINE
 generate_apache_config() {
     local config_file="$1"
     local server_name="${CONFIG[DOMAIN]:-glpi.local}"
+    local php_version="${SYSTEM[PHP_VERSION]}"
     
     cat > "${config_file}" << APACHE_CONFIG
 <VirtualHost *:80>
     ServerName ${server_name}
     ServerAdmin webmaster@${server_name}
     DocumentRoot ${CONFIG[INSTALL_DIR]}/public
+    
+    # Enable PHP-FPM
+    <FilesMatch \.php$>
+        SetHandler "proxy:unix:/run/php/php${php_version}-fpm.sock|fcgi://localhost"
+    </FilesMatch>
     
     <Directory ${CONFIG[INSTALL_DIR]}/public>
         Require all granted
@@ -927,9 +933,10 @@ generate_apache_config() {
         RewriteRule ^(.*)$ index.php [QSA,L]
         Options -Indexes -ExecCGI
         
+        # PHP settings
         <IfModule mod_php.c>
             php_value session.cookie_httponly On
-            php_value session.cookie_secure On
+            php_value session.cookie_secure Off
         </IfModule>
     </Directory>
     
@@ -941,7 +948,7 @@ generate_apache_config() {
         Require all granted
     </Directory>
     
-    <FilesMatch "\\.(htaccess|htpasswd|ini|log|sh|sql)$">
+    <FilesMatch "\.(htaccess|htpasswd|ini|log|sh|sql)$">
         Require all denied
     </FilesMatch>
     
@@ -968,6 +975,11 @@ generate_apache_config_rhel() {
     ServerAdmin webmaster@${server_name}
     DocumentRoot ${CONFIG[INSTALL_DIR]}/public
     
+    # Enable PHP-FPM
+    <FilesMatch \.php$>
+        SetHandler "proxy:fcgi://127.0.0.1:9000"
+    </FilesMatch>
+    
     <Directory ${CONFIG[INSTALL_DIR]}/public>
         Require all granted
         RewriteEngine On
@@ -977,7 +989,7 @@ generate_apache_config_rhel() {
         
         <IfModule mod_php.c>
             php_value session.cookie_httponly On
-            php_value session.cookie_secure On
+            php_value session.cookie_secure Off
         </IfModule>
     </Directory>
     
@@ -989,7 +1001,7 @@ generate_apache_config_rhel() {
         Require all granted
     </Directory>
     
-    <FilesMatch "\\.(htaccess|htpasswd|ini|log|sh|sql)$">
+    <FilesMatch "\.(htaccess|htpasswd|ini|log|sh|sql)$">
         Require all denied
     </FilesMatch>
     
@@ -1017,11 +1029,23 @@ configure_webserver() {
         config_file="/etc/apache2/sites-available/glpi.conf"
         generate_apache_config "${config_file}"
         
+        # Enable required Apache modules
+        info "Enabling Apache modules..."
+        a2enmod rewrite headers proxy proxy_fcgi setenvif 2>/dev/null || true
+        
+        # Enable PHP-FPM configuration
+        a2enconf "php${SYSTEM[PHP_VERSION]}-fpm" 2>/dev/null || true
+        
+        # Disable default site and enable GLPI
         a2dissite 000-default.conf 2>/dev/null || true
         a2ensite glpi.conf
-        a2enmod rewrite headers
         
         add_rollback "a2dissite glpi.conf; a2ensite 000-default.conf; rm -f '${config_file}'"
+        
+        # Start PHP-FPM
+        info "Starting PHP-FPM..."
+        systemctl enable "${SYSTEM[PHP_FPM_SERVICE]}" 2>/dev/null || true
+        systemctl restart "${SYSTEM[PHP_FPM_SERVICE]}" 2>/dev/null || true
         
         info "Testing Apache configuration..."
         apache2ctl configtest || fatal "Apache configuration test failed"
@@ -1031,6 +1055,11 @@ configure_webserver() {
         generate_apache_config_rhel "${config_file}"
         
         add_rollback "rm -f '${config_file}'"
+        
+        # Start PHP-FPM
+        info "Starting PHP-FPM..."
+        systemctl enable php-fpm 2>/dev/null || true
+        systemctl restart php-fpm 2>/dev/null || true
         
         if command -v getenforce &>/dev/null && [[ $(getenforce) != "Disabled" ]]; then
             info "Configuring SELinux..."
