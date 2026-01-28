@@ -450,15 +450,21 @@ configure_database() {
     systemctl start mariadb
     systemctl enable mariadb
     
-    # Generate password if not provided
+    # Generate password if not provided (only alphanumeric for compatibility)
     if [[ -z "${CONFIG[DB_PASS]}" ]]; then
-        CONFIG[DB_PASS]=$(openssl rand -base64 24 | tr -dc 'a-zA-Z0-9' | head -c 20)
+        CONFIG[DB_PASS]=$(tr -dc 'a-zA-Z0-9' < /dev/urandom | head -c 20)
     fi
     
     info "Creating database and user..."
     
+    # Drop user if exists to ensure clean state
+    mysql -e "DROP USER IF EXISTS '${CONFIG[DB_USER]}'@'localhost';" 2>/dev/null || true
+    
+    # Create database
     mysql -e "CREATE DATABASE IF NOT EXISTS \`${CONFIG[DB_NAME]}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
-    mysql -e "CREATE USER IF NOT EXISTS '${CONFIG[DB_USER]}'@'localhost' IDENTIFIED BY '${CONFIG[DB_PASS]}';"
+    
+    # Create user with password
+    mysql -e "CREATE USER '${CONFIG[DB_USER]}'@'localhost' IDENTIFIED BY '${CONFIG[DB_PASS]}';"
     mysql -e "GRANT ALL PRIVILEGES ON \`${CONFIG[DB_NAME]}\`.* TO '${CONFIG[DB_USER]}'@'localhost';"
     mysql -e "FLUSH PRIVILEGES;"
     
@@ -466,6 +472,13 @@ configure_database() {
     mysql_tzinfo_to_sql /usr/share/zoneinfo 2>/dev/null | mysql mysql 2>/dev/null || true
     mysql -e "GRANT SELECT ON mysql.time_zone_name TO '${CONFIG[DB_USER]}'@'localhost';" 2>/dev/null || true
     mysql -e "FLUSH PRIVILEGES;"
+    
+    # Verify connection
+    if mysql -u"${CONFIG[DB_USER]}" -p"${CONFIG[DB_PASS]}" -e "USE ${CONFIG[DB_NAME]};" 2>/dev/null; then
+        success "Database connection verified"
+    else
+        fatal "Database connection failed - check credentials"
+    fi
     
     success "Database configured"
     info "  ├─ Database: ${CONFIG[DB_NAME]}"
