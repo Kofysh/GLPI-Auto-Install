@@ -2,10 +2,11 @@
 
 set -Eeo pipefail
 
-readonly SCRIPT_NAME="${BASH_SOURCE[0]:-glpi-installer.sh}"
-readonly SCRIPT_NAME_BASE="$(basename "${SCRIPT_NAME_BASE}")"
+SCRIPT_NAME="${BASH_SOURCE[0]:-glpi-installer.sh}"
+readonly SCRIPT_NAME
+readonly SCRIPT_NAME_BASE="$(basename "${SCRIPT_NAME}")"
 readonly SCRIPT_VERSION="4.0.0"
-readonly SCRIPT_DIR="$(cd "$(dirname "${SCRIPT_NAME_BASE}")" 2>/dev/null && pwd || echo "/tmp")"
+readonly SCRIPT_DIR="$(cd "$(dirname "${SCRIPT_NAME}")" 2>/dev/null && pwd || echo "/tmp")"
 readonly SCRIPT_PID=$$
 readonly START_TIME=$(date +%s)
 
@@ -530,22 +531,25 @@ install_packages_debian() {
     apt-get update -qq
     
     info "Installing base packages..."
-    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-        apache2 \
-        mariadb-server \
-        mariadb-client \
-        curl \
-        wget \
-        tar \
-        bzip2 \
-        unzip \
-        gnupg \
-        ca-certificates \
-        lsb-release \
-        apt-transport-https \
-        software-properties-common \
-        cron \
+    
+    local base_packages=(
+        apache2
+        mariadb-server
+        mariadb-client
+        curl
+        wget
+        tar
+        bzip2
+        unzip
+        gnupg
+        ca-certificates
+        cron
         jq
+    )
+    
+    for pkg in "${base_packages[@]}"; do
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${pkg}" 2>/dev/null || true
+    done
     
     local php_packages=(
         "php${SYSTEM[PHP_VERSION]}"
@@ -581,9 +585,7 @@ install_packages_debian() {
     for pkg in "${php_packages[@]}"; do
         ((current++)) || true
         print_progress ${current} ${total}
-        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${pkg}" 2>/dev/null || {
-            warn "Package ${pkg} not available, skipping..."
-        }
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${pkg}" 2>/dev/null || true
     done
     echo ""
     
