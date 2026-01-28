@@ -193,11 +193,16 @@ confirm() {
         [[ "${default}" =~ ^[Yy]$ ]] && return 0 || return 1
     fi
     
+    # If not running interactively (piped), use default
+    if [[ ! -t 0 ]]; then
+        [[ "${default}" =~ ^[Yy]$ ]] && return 0 || return 1
+    fi
+    
     local prompt
     [[ "${default}" =~ ^[Yy]$ ]] && prompt="[Y/n]" || prompt="[y/N]"
     
     while true; do
-        read -rp "  ${C_YELLOW}?${C_RESET} ${message} ${prompt}: " answer
+        read -rp "  ${C_YELLOW}?${C_RESET} ${message} ${prompt}: " answer </dev/tty
         answer="${answer:-$default}"
         case "${answer}" in
             [Yy]*) return 0 ;;
@@ -293,14 +298,15 @@ check_root() {
 check_network() {
     info "Checking network connectivity..."
     
-    local endpoints=("github.com" "api.github.com" "1.1.1.1")
     local reachable=0
     
-    for endpoint in "${endpoints[@]}"; do
-        if ping -c 1 -W 3 "${endpoint}" &>/dev/null || curl -s --connect-timeout 3 "https://${endpoint}" &>/dev/null; then
-            ((reachable++))
-        fi
-    done
+    if curl -s --connect-timeout 5 -o /dev/null "https://github.com" </dev/null 2>/dev/null; then
+        ((reachable++))
+    elif curl -s --connect-timeout 5 -o /dev/null "https://api.github.com" </dev/null 2>/dev/null; then
+        ((reachable++))
+    elif ping -c 1 -W 3 "1.1.1.1" </dev/null &>/dev/null; then
+        ((reachable++))
+    fi
     
     if [[ ${reachable} -eq 0 ]]; then
         fatal "No network connectivity. Please check your internet connection."
@@ -1390,6 +1396,11 @@ parse_arguments() {
 main() {
     parse_arguments "$@"
     
+    # Auto-detect non-interactive mode (piped input)
+    if [[ ! -t 0 ]]; then
+        UNATTENDED=true
+    fi
+    
     print_banner
     
     check_root
@@ -1401,6 +1412,10 @@ main() {
     
     if [[ "${DRY_RUN}" == "true" ]]; then
         warn "DRY RUN MODE - No changes will be made"
+    fi
+    
+    if [[ "${UNATTENDED}" == "true" ]]; then
+        info "Running in unattended mode"
     fi
     
     check_network
