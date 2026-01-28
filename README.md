@@ -1,11 +1,11 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/glpi-project/glpi/main/public/pics/logos/logo-GLPI-250-black.png" alt="GLPI Logo" width="200"/>
+  <img src="https://raw.githubusercontent.com/glpi-project/glpi/main/pics/logos/logo-GLPI-100-black.png" alt="GLPI Logo" width="200"/>
 </p>
 
 <h1 align="center">🚀 GLPI Auto-Install</h1>
 
 <p align="center">
-  <strong>Automated installer for GLPI</strong><br>
+  <strong>Professional automated installer for GLPI</strong><br>
   Deploy GLPI in minutes on any supported Linux distribution
 </p>
 
@@ -19,9 +19,9 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-3.0.0-blue.svg" alt="Version"/>
+  <img src="https://img.shields.io/badge/version-4.0.0-blue.svg" alt="Version"/>
   <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License"/>
-  <img src="https://img.shields.io/badge/GLPI-10.x-orange.svg" alt="GLPI Version"/>
+  <img src="https://img.shields.io/badge/GLPI-10.x%20%7C%2011.x-orange.svg" alt="GLPI Version"/>
   <img src="https://img.shields.io/badge/shell-bash-lightgrey.svg" alt="Shell"/>
 </p>
 
@@ -44,25 +44,26 @@
 | ⚙️ **SELinux support** | Full support for RHEL/CentOS/Rocky/Alma |
 | 🎨 **Intuitive interface** | Progress bars, colors and clear messages |
 | 💾 **Auto backup** | Backs up existing installation before replacement |
+| 🌐 **Direct access** | GLPI accessible directly on IP (no /glpi suffix needed) |
 
 ## 💻 Supported Systems
 
 | Distribution | Versions |
 |--------------|----------|
-| **Debian** | 10, 11, 12 |
+| **Debian** | 10, 11, 12, 13 |
 | **Ubuntu** | 20.04, 22.04, 24.04 |
 | **RHEL** | 8, 9 |
 | **CentOS** | 8, 9 |
 | **Rocky Linux** | 8, 9 |
 | **AlmaLinux** | 8, 9 |
-| **Fedora** | 38, 39, 40 |
+| **Fedora** | 38, 39, 40, 41 |
 
 ## 📋 Requirements
 
 - Root or sudo access
 - Internet connection
-- **Minimum 1 GB RAM**
-- **Minimum 5 GB disk space**
+- **Minimum 512 MB RAM**
+- **Minimum 2 GB disk space**
 
 ## ⚡ Quick Start
 
@@ -70,12 +71,6 @@
 
 ```bash
 curl -sL https://raw.githubusercontent.com/Kofysh/GLPI-Auto-Install/main/glpi-installer.sh | sudo bash
-```
-
-### One-Line Install (Automatic Mode)
-
-```bash
-curl -sL https://raw.githubusercontent.com/Kofysh/GLPI-Auto-Install/main/glpi-installer.sh | sudo bash -s -- -y
 ```
 
 ### Download and Run
@@ -147,7 +142,7 @@ sudo ./glpi-installer.sh \
 ### Piped with Options
 
 ```bash
-curl -sL https://raw.githubusercontent.com/Kofysh/GLPI-Auto-Install/main/glpi-installer.sh | sudo bash -s -- -y --timezone Europe/London
+curl -sL https://raw.githubusercontent.com/Kofysh/GLPI-Auto-Install/main/glpi-installer.sh | sudo bash -s -- --timezone Europe/London
 ```
 
 ## 🎛️ Options
@@ -166,13 +161,48 @@ curl -sL https://raw.githubusercontent.com/Kofysh/GLPI-Auto-Install/main/glpi-in
 | `--timezone TZ` | Timezone (default: Europe/Paris) |
 | `--domain DOMAIN` | Server domain name |
 | `--version` | Display script version |
+| `--uninstall` | Completely uninstall GLPI |
+| `--keep-db` | Keep database when uninstalling |
+| `--keep-packages` | Keep Apache/MariaDB/PHP when uninstalling |
+
+## 🗑️ Uninstallation
+
+### Full Uninstall (Interactive)
+
+```bash
+sudo ./glpi-installer.sh --uninstall
+```
+
+### Full Uninstall (No Prompts)
+
+```bash
+sudo ./glpi-installer.sh --uninstall -y
+```
+
+### Uninstall but Keep Database
+
+```bash
+sudo ./glpi-installer.sh --uninstall --keep-db
+```
+
+### Uninstall but Keep LAMP Stack
+
+```bash
+sudo ./glpi-installer.sh --uninstall --keep-packages
+```
+
+### Uninstall via curl
+
+```bash
+curl -sL https://raw.githubusercontent.com/Kofysh/GLPI-Auto-Install/main/glpi-installer.sh | sudo bash -s -- --uninstall -y
+```
 
 ## 📂 File Structure
 
 After installation, files are organized following security best practices:
 
 ```
-/var/www/html/glpi/      # GLPI application (source code)
+/var/www/glpi/           # GLPI application (source code)
 /var/lib/glpi/           # Data (files, marketplace)
 /var/log/glpi/           # GLPI logs
 /etc/glpi/               # Configuration
@@ -186,7 +216,7 @@ After installation, files are organized following security best practices:
 
 Open your browser and navigate to:
 ```
-http://YOUR_SERVER_IP/glpi
+http://YOUR_SERVER_IP/
 ```
 
 ### 2. Complete Setup Wizard
@@ -208,7 +238,7 @@ Follow the web wizard and enter the database information displayed at the end of
 
 ```bash
 # Remove installation script
-sudo rm /var/www/html/glpi/install/install.php
+sudo rm /var/www/glpi/install/install.php
 
 # Verify permissions
 sudo ls -la /var/lib/glpi/
@@ -267,7 +297,7 @@ mysql -u glpi_user -p glpi_db
 ### Check Permissions
 
 ```bash
-ls -la /var/www/html/glpi/
+ls -la /var/www/glpi/
 ls -la /var/lib/glpi/
 ls -la /etc/glpi/
 ```
