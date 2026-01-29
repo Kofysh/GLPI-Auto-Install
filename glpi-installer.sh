@@ -452,7 +452,11 @@ configure_database() {
     
     # Generate password if not provided (only alphanumeric for compatibility)
     if [[ -z "${CONFIG[DB_PASS]}" ]]; then
-        CONFIG[DB_PASS]=$(tr -dc 'a-zA-Z0-9' < /dev/urandom | head -c 20)
+        CONFIG[DB_PASS]=$(head -c 100 /dev/urandom | tr -dc 'a-zA-Z0-9' | head -c 20 || true)
+        # Fallback if urandom fails
+        if [[ -z "${CONFIG[DB_PASS]}" || ${#CONFIG[DB_PASS]} -lt 20 ]]; then
+            CONFIG[DB_PASS]=$(date +%s%N | sha256sum | head -c 20)
+        fi
     fi
     
     info "Creating database and user..."
