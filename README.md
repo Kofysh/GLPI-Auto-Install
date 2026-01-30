@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/glpi-project/glpi/main/pics/logos/logo-GLPI-100-black.png" alt="GLPI Logo" width="200"/>
+  <img src="https://raw.githubusercontent.com/glpi-project/glpi/main/public/pics/logos/logo-GLPI-250-black.png" alt="GLPI Logo" width="200"/>
 </p>
 
 <h1 align="center">🚀 GLPI Auto-Install</h1>
