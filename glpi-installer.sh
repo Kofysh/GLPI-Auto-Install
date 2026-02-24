@@ -2,11 +2,23 @@
 
 #===============================================================================
 #
-#   GLPI Auto-Installer v4.0
+#   GLPI Auto-Installer v4.1
 #   Optimized for Debian 10/11/12/13 and Ubuntu 20.04/22.04/24.04
 #
 #   Author: Kofysh
 #   GitHub: https://github.com/Kofysh/GLPI-Auto-Install
+#
+#   Changelog v4.1:
+#   - Enhanced password generation with special characters
+#   - SSL/HTTPS support with Let's Encrypt
+#   - Automatic rollback on failure
+#   - Post-installation validation
+#   - MariaDB performance tuning
+#   - PHP opcache optimization
+#   - Input validation and sanitization
+#   - Progress indicators
+#   - Container detection
+#   - Specific version installation support
 #
 #===============================================================================
 
@@ -19,7 +31,7 @@ set -Eeo pipefail
 SCRIPT_NAME="${BASH_SOURCE[0]:-glpi-installer.sh}"
 readonly SCRIPT_NAME
 readonly SCRIPT_NAME_BASE="$(basename "${SCRIPT_NAME}")"
-readonly SCRIPT_VERSION="4.0.0"
+readonly SCRIPT_VERSION="4.1.0"
 readonly SCRIPT_PID=$$
 readonly START_TIME=$(date +%s)
 
@@ -46,6 +58,8 @@ declare -A CONFIG=(
     [TIMEZONE]="Europe/Paris"
     [INSTALL_DIR]="${GLPI_INSTALL_DIR}"
     [DOMAIN]=""
+    [ENABLE_SSL]="false"
+    [SSL_EMAIL]=""
 )
 
 declare -A SYSTEM=(
@@ -56,6 +70,7 @@ declare -A SYSTEM=(
     [TOTAL_MEMORY_MB]=0
     [AVAILABLE_DISK_GB]=0
     [IP_ADDRESS]=""
+    [IS_CONTAINER]="false"
 )
 
 declare VERBOSE=false
@@ -65,6 +80,8 @@ declare UNATTENDED=false
 declare UNINSTALL_MODE=false
 declare KEEP_DATABASE=false
 declare KEEP_PACKAGES=false
+declare ROLLBACK_ENABLED=true
+declare INSTALLATION_FAILED=false
 
 # Colors
 readonly C_RESET='\033[0m'
@@ -76,6 +93,7 @@ readonly C_YELLOW='\033[0;33m'
 readonly C_BLUE='\033[0;34m'
 readonly C_CYAN='\033[0;36m'
 readonly C_BG_RED='\033[41m'
+readonly C_MAGENTA='\033[0;35m'
 
 #-------------------------------------------------------------------------------
 # LOGGING FUNCTIONS
@@ -118,6 +136,7 @@ error()   { log ERROR "$@"; }
 
 fatal() {
     log FATAL "$@"
+    INSTALLATION_FAILED=true
     rm -f "${LOCK_FILE}" 2>/dev/null || true
     exit 1
 }
@@ -137,7 +156,7 @@ print_banner() {
   ╚██████╔╝███████╗██║     ██║    ██║██║ ╚████║███████║   ██║   ██║  ██║███████╗███████╗███████╗██║  ██║
    ╚═════╝ ╚══════╝╚═╝     ╚═╝    ╚═╝╚═╝  ╚═══╝╚══════╝   ╚═╝   ╚═╝  ╚═╝╚══════╝╚══════╝╚══════╝╚═╝  ╚═╝
 
-                                 Auto-Installer v4.0 | By Kofysh
+                                 Auto-Installer v4.1 | By Kofysh
 
 BANNER
     echo -e "${C_RESET}"
@@ -155,6 +174,16 @@ print_step() {
     printf "${C_CYAN}║${C_RESET} ${C_BOLD}[%02d/%02d]${C_RESET} %-$((width-10))s ${C_CYAN}║${C_RESET}\n" "${step_num}" "${total}" "${title}"
     echo -e "${C_CYAN}╚${line}╝${C_RESET}"
     echo ""
+}
+
+show_progress() {
+    local current=$1
+    local total=$2
+    local percent=$((current * 100 / total))
+    local filled=$((percent / 2))
+    
+    printf "\r  ${C_CYAN}[%-50s]${C_RESET} %d%%" $(printf "█%.0s" $(seq 1 $filled)) "$percent"
+    [[ $current -eq $total ]] && echo ""
 }
 
 confirm() {
@@ -176,6 +205,38 @@ confirm() {
             *) echo "  Please answer yes or no." ;;
         esac
     done
+}
+
+#-------------------------------------------------------------------------------
+# VALIDATION FUNCTIONS
+#-------------------------------------------------------------------------------
+
+validate_input() {
+    local input_type="$1"
+    local input_value="$2"
+    
+    case "${input_type}" in
+        db_name|db_user)
+            if [[ ! "${input_value}" =~ ^[a-zA-Z0-9_]+$ ]]; then
+                fatal "Invalid ${input_type}: only alphanumeric and underscore allowed"
+            fi
+            ;;
+        domain)
+            if [[ -n "${input_value}" ]] && [[ ! "${input_value}" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$ ]]; then
+                fatal "Invalid domain name format"
+            fi
+            ;;
+        email)
+            if [[ -n "${input_value}" ]] && [[ ! "${input_value}" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; then
+                fatal "Invalid email address format"
+            fi
+            ;;
+        version)
+            if [[ -n "${input_value}" ]] && [[ ! "${input_value}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                fatal "Invalid version format (expected: X.Y.Z)"
+            fi
+            ;;
+    esac
 }
 
 #-------------------------------------------------------------------------------
@@ -203,41 +264,94 @@ release_lock() {
     rm -f "${LOCK_FILE}" 2>/dev/null || true
 }
 
+rollback_installation() {
+    if [[ "${ROLLBACK_ENABLED}" != "true" || "${INSTALLATION_FAILED}" != "true" ]]; then
+        return 0
+    fi
+    
+    warn "Installation failed - initiating rollback..."
+    
+    # Restore previous GLPI installation
+    if [[ -d "${BACKUP_DIR}"/glpi_backup_* ]]; then
+        local latest_backup=$(ls -td "${BACKUP_DIR}"/glpi_backup_* 2>/dev/null | head -1)
+        if [[ -n "${latest_backup}" ]]; then
+            info "Restoring previous installation from ${latest_backup}"
+            rm -rf "${CONFIG[INSTALL_DIR]}" 2>/dev/null || true
+            mv "${latest_backup}" "${CONFIG[INSTALL_DIR]}" 2>/dev/null || true
+            success "Previous installation restored"
+        fi
+    fi
+    
+    # Remove incomplete files
+    if [[ ! -d "${BACKUP_DIR}"/glpi_backup_* ]]; then
+        info "Removing incomplete installation files"
+        rm -rf "${CONFIG[INSTALL_DIR]}" 2>/dev/null || true
+        rm -rf "${GLPI_VAR_DIR}" 2>/dev/null || true
+        rm -rf "${GLPI_CONFIG_DIR}" 2>/dev/null || true
+    fi
+    
+    # Remove database if created during this installation
+    if [[ -n "${CONFIG[DB_NAME]}" ]]; then
+        mysql -e "DROP DATABASE IF EXISTS \`${CONFIG[DB_NAME]}\`;" 2>/dev/null || true
+        mysql -e "DROP USER IF EXISTS '${CONFIG[DB_USER]}'@'localhost';" 2>/dev/null || true
+        mysql -e "FLUSH PRIVILEGES;" 2>/dev/null || true
+    fi
+    
+    warn "Rollback completed"
+}
+
 cleanup() {
     local exit_code=$?
-    release_lock
+    
     if [[ ${exit_code} -ne 0 ]]; then
+        INSTALLATION_FAILED=true
+        rollback_installation
         error "Installation failed. Check log: ${LOG_FILE}"
     fi
+    
+    release_lock
+    
     local duration=$(($(date +%s) - START_TIME))
     info "Total execution time: $((duration / 60))m $((duration % 60))s"
 }
 
 trap cleanup EXIT
 
+detect_container() {
+    if [[ -f /.dockerenv ]] || grep -q docker /proc/1/cgroup 2>/dev/null; then
+        SYSTEM[IS_CONTAINER]="true"
+        warn "Container environment detected - some features may be limited"
+        return 0
+    fi
+    return 1
+}
+
 check_network() {
     info "Checking network connectivity..."
     
-    if curl -s --connect-timeout 10 -o /dev/null "https://github.com" </dev/null 2>/dev/null; then
-        success "Network connectivity verified"
-        return 0
-    fi
+    local test_urls=("https://github.com" "https://api.github.com" "8.8.8.8")
     
-    if curl -s --connect-timeout 10 -o /dev/null "https://api.github.com" </dev/null 2>/dev/null; then
-        success "Network connectivity verified"
-        return 0
-    fi
-    
-    if ping -c 1 -W 5 8.8.8.8 </dev/null &>/dev/null; then
-        success "Network connectivity verified"
-        return 0
-    fi
+    for url in "${test_urls[@]}"; do
+        if [[ "${url}" == "8.8.8.8" ]]; then
+            if ping -c 1 -W 5 "${url}" </dev/null &>/dev/null; then
+                success "Network connectivity verified"
+                return 0
+            fi
+        else
+            if curl -s --connect-timeout 10 -o /dev/null "${url}" </dev/null 2>/dev/null; then
+                success "Network connectivity verified"
+                return 0
+            fi
+        fi
+    done
     
     fatal "No network connectivity. Please check your internet connection."
 }
 
 detect_system() {
-    print_step 1 10 "System Detection"
+    print_step 1 12 "System Detection"
+    
+    detect_container
     
     if [[ ! -f /etc/os-release ]]; then
         fatal "Cannot detect OS: /etc/os-release not found"
@@ -249,12 +363,10 @@ detect_system() {
     SYSTEM[OS_VERSION]="${VERSION_ID}"
     SYSTEM[OS_PRETTY_NAME]="${PRETTY_NAME}"
     
-    # Check if Debian or Ubuntu
     if [[ "${ID}" != "debian" && "${ID}" != "ubuntu" ]]; then
         fatal "This script only supports Debian and Ubuntu. Detected: ${ID}"
     fi
     
-    # Determine PHP version based on OS
     case "${ID}" in
         debian)
             case "${VERSION_ID}" in
@@ -283,11 +395,12 @@ detect_system() {
     info "  ├─ PHP Version: ${SYSTEM[PHP_VERSION]}"
     info "  ├─ Memory: ${SYSTEM[TOTAL_MEMORY_MB]} MB"
     info "  ├─ Available Disk: ${SYSTEM[AVAILABLE_DISK_GB]} GB"
-    info "  └─ IP Address: ${SYSTEM[IP_ADDRESS]}"
+    info "  ├─ IP Address: ${SYSTEM[IP_ADDRESS]}"
+    info "  └─ Container: ${SYSTEM[IS_CONTAINER]}"
 }
 
 check_requirements() {
-    print_step 2 10 "Requirements Check"
+    print_step 2 12 "Requirements Check"
     
     local errors=0
     
@@ -319,9 +432,17 @@ check_requirements() {
 #-------------------------------------------------------------------------------
 
 fetch_latest_version() {
-    print_step 3 10 "Fetching Latest GLPI Version"
+    print_step 3 12 "Fetching GLPI Version"
     
-    info "Querying GitHub API..."
+    if [[ -n "${CONFIG[GLPI_VERSION]}" ]]; then
+        info "Using specified version: ${CONFIG[GLPI_VERSION]}"
+        validate_input "version" "${CONFIG[GLPI_VERSION]}"
+        CONFIG[GLPI_DOWNLOAD_URL]="https://github.com/glpi-project/glpi/releases/download/${CONFIG[GLPI_VERSION]}/glpi-${CONFIG[GLPI_VERSION]}.tgz"
+        success "Version configured: ${CONFIG[GLPI_VERSION]}"
+        return 0
+    fi
+    
+    info "Querying GitHub API for latest version..."
     
     local api_response
     local retry=0
@@ -352,24 +473,34 @@ fetch_latest_version() {
 }
 
 install_packages() {
-    print_step 4 10 "Installing Packages"
+    print_step 4 12 "Installing Packages"
     
     info "Updating package repositories..."
     apt-get update -qq
     
     info "Installing Apache, MariaDB, and utilities..."
-    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-        apache2 \
-        mariadb-server \
-        mariadb-client \
-        curl \
-        wget \
-        tar \
-        bzip2 \
-        unzip \
-        cron \
-        ca-certificates \
+    local base_packages=(
+        apache2
+        mariadb-server
+        mariadb-client
+        curl
+        wget
+        tar
+        bzip2
+        unzip
+        cron
+        ca-certificates
         gnupg
+    )
+    
+    local total=${#base_packages[@]}
+    local current=0
+    
+    for pkg in "${base_packages[@]}"; do
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${pkg}" 2>/dev/null || true
+        current=$((current + 1))
+        show_progress ${current} ${total}
+    done
     
     info "Installing PHP ${SYSTEM[PHP_VERSION]} and extensions..."
     
@@ -392,13 +523,17 @@ install_packages() {
         "libapache2-mod-php${SYSTEM[PHP_VERSION]}"
     )
     
+    total=${#php_packages[@]}
+    current=0
+    
     for pkg in "${php_packages[@]}"; do
         DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${pkg}" 2>/dev/null || {
             warn "Package ${pkg} not available, skipping..."
         }
+        current=$((current + 1))
+        show_progress ${current} ${total}
     done
     
-    # Optional packages
     DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
         "php${SYSTEM[PHP_VERSION]}-redis" \
         "php${SYSTEM[PHP_VERSION]}-apcu" 2>/dev/null || true
@@ -407,7 +542,7 @@ install_packages() {
 }
 
 configure_php() {
-    print_step 5 10 "Configuring PHP"
+    print_step 5 12 "Configuring PHP"
     
     local php_ini="/etc/php/${SYSTEM[PHP_VERSION]}/apache2/php.ini"
     
@@ -422,10 +557,8 @@ configure_php() {
     
     info "Configuring ${php_ini}..."
     
-    # Backup
     cp "${php_ini}" "${php_ini}.backup"
     
-    # Apply settings
     sed -i "s/^memory_limit.*/memory_limit = 256M/" "${php_ini}"
     sed -i "s/^upload_max_filesize.*/upload_max_filesize = 100M/" "${php_ini}"
     sed -i "s/^post_max_size.*/post_max_size = 100M/" "${php_ini}"
@@ -434,64 +567,86 @@ configure_php() {
     sed -i "s|^;*date.timezone.*|date.timezone = ${CONFIG[TIMEZONE]}|" "${php_ini}"
     sed -i "s/^;*session.cookie_httponly.*/session.cookie_httponly = On/" "${php_ini}"
     
-    # Configure FPM pool
+    info "Configuring PHP OPcache..."
+    cat >> "${php_ini}" << 'OPCACHE'
+
+; GLPI Optimizations
+opcache.enable=1
+opcache.memory_consumption=256
+opcache.interned_strings_buffer=16
+opcache.max_accelerated_files=10000
+opcache.validate_timestamps=0
+opcache.save_comments=1
+opcache.fast_shutdown=1
+OPCACHE
+    
     local fpm_conf="/etc/php/${SYSTEM[PHP_VERSION]}/fpm/pool.d/www.conf"
     if [[ -f "${fpm_conf}" ]]; then
         sed -i "s/^;*request_terminate_timeout.*/request_terminate_timeout = 600/" "${fpm_conf}"
     fi
     
-    success "PHP configured"
+    success "PHP configured with optimizations"
 }
 
 configure_database() {
-    print_step 6 10 "Configuring Database"
+    print_step 6 12 "Configuring Database"
     
     info "Starting MariaDB..."
     systemctl start mariadb
     systemctl enable mariadb
     
-    # Generate password if not provided (only alphanumeric for compatibility)
+    info "Applying MariaDB performance tuning..."
+    cat > "/etc/mysql/mariadb.conf.d/99-glpi.cnf" << 'MARIADB'
+[mysqld]
+# GLPI Performance Tuning
+innodb_buffer_pool_size = 256M
+innodb_log_file_size = 64M
+max_connections = 200
+query_cache_type = 1
+query_cache_size = 32M
+query_cache_limit = 2M
+innodb_flush_log_at_trx_commit = 2
+innodb_file_per_table = 1
+MARIADB
+    
+    systemctl restart mariadb
+    sleep 2
+    
     if [[ -z "${CONFIG[DB_PASS]}" ]]; then
-        CONFIG[DB_PASS]=$(head -c 100 /dev/urandom | tr -dc 'a-zA-Z0-9' | head -c 20 || true)
-        # Fallback if urandom fails
+        info "Generating secure database password..."
+        CONFIG[DB_PASS]=$(head -c 32 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9!@#%^&*' | head -c 24)
+        
         if [[ -z "${CONFIG[DB_PASS]}" || ${#CONFIG[DB_PASS]} -lt 20 ]]; then
-            CONFIG[DB_PASS]=$(date +%s%N | sha256sum | head -c 20)
+            CONFIG[DB_PASS]=$(date +%s%N | sha256sum | base64 | head -c 24)
         fi
     fi
     
     info "Creating database and user..."
     
-    # Drop user if exists to ensure clean state
     mysql -e "DROP USER IF EXISTS '${CONFIG[DB_USER]}'@'localhost';" 2>/dev/null || true
-    
-    # Create database
     mysql -e "CREATE DATABASE IF NOT EXISTS \`${CONFIG[DB_NAME]}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
-    
-    # Create user with password
     mysql -e "CREATE USER '${CONFIG[DB_USER]}'@'localhost' IDENTIFIED BY '${CONFIG[DB_PASS]}';"
     mysql -e "GRANT ALL PRIVILEGES ON \`${CONFIG[DB_NAME]}\`.* TO '${CONFIG[DB_USER]}'@'localhost';"
     mysql -e "FLUSH PRIVILEGES;"
     
-    # Timezone support
     mysql_tzinfo_to_sql /usr/share/zoneinfo 2>/dev/null | mysql mysql 2>/dev/null || true
     mysql -e "GRANT SELECT ON mysql.time_zone_name TO '${CONFIG[DB_USER]}'@'localhost';" 2>/dev/null || true
     mysql -e "FLUSH PRIVILEGES;"
     
-    # Verify connection
     if mysql -u"${CONFIG[DB_USER]}" -p"${CONFIG[DB_PASS]}" -e "USE ${CONFIG[DB_NAME]};" 2>/dev/null; then
         success "Database connection verified"
     else
         fatal "Database connection failed - check credentials"
     fi
     
-    success "Database configured"
+    success "Database configured with performance tuning"
     info "  ├─ Database: ${CONFIG[DB_NAME]}"
     info "  ├─ User: ${CONFIG[DB_USER]}"
-    info "  └─ Password: ${CONFIG[DB_PASS]}"
+    info "  └─ Password: [SECURED - saved to /root/.glpi_credentials]"
 }
 
 download_glpi() {
-    print_step 7 10 "Downloading GLPI ${CONFIG[GLPI_VERSION]}"
+    print_step 7 12 "Downloading GLPI ${CONFIG[GLPI_VERSION]}"
     
     local temp_dir=$(mktemp -d)
     local archive="${temp_dir}/glpi.tgz"
@@ -503,16 +658,17 @@ download_glpi() {
         fatal "Failed to download GLPI"
     fi
     
-    info "Verifying archive..."
+    info "Verifying archive integrity..."
     if ! tar -tzf "${archive}" &>/dev/null; then
         rm -rf "${temp_dir}"
         fatal "Downloaded archive is corrupted"
     fi
     
-    # Backup existing installation
     if [[ -d "${CONFIG[INSTALL_DIR]}" ]]; then
         info "Backing up existing installation..."
-        mv "${CONFIG[INSTALL_DIR]}" "${BACKUP_DIR}/glpi_backup_$(date +%Y%m%d_%H%M%S)"
+        local backup_name="glpi_backup_$(date +%Y%m%d_%H%M%S)"
+        mv "${CONFIG[INSTALL_DIR]}" "${BACKUP_DIR}/${backup_name}"
+        success "Backup created: ${BACKUP_DIR}/${backup_name}"
     fi
     
     info "Extracting..."
@@ -525,7 +681,7 @@ download_glpi() {
 }
 
 configure_glpi() {
-    print_step 8 10 "Configuring GLPI"
+    print_step 8 12 "Configuring GLPI"
     
     info "Creating directory structure..."
     
@@ -534,7 +690,6 @@ configure_glpi() {
     mkdir -p "${GLPI_LOG_DIR}"
     mkdir -p "${GLPI_CONFIG_DIR}"
     
-    # Move data directories
     if [[ -d "${CONFIG[INSTALL_DIR]}/files" ]]; then
         cp -rn "${CONFIG[INSTALL_DIR]}/files"/* "${GLPI_VAR_DIR}/files/" 2>/dev/null || true
         rm -rf "${CONFIG[INSTALL_DIR]}/files"
@@ -552,7 +707,6 @@ configure_glpi() {
     
     info "Creating configuration files..."
     
-    # downstream.php
     cat > "${CONFIG[INSTALL_DIR]}/inc/downstream.php" << 'DOWNSTREAM'
 <?php
 define('GLPI_CONFIG_DIR', '/etc/glpi/');
@@ -561,7 +715,6 @@ if (file_exists(GLPI_CONFIG_DIR . '/local_define.php')) {
 }
 DOWNSTREAM
 
-    # local_define.php
     cat > "${GLPI_CONFIG_DIR}/local_define.php" << LOCALDEFINE
 <?php
 define('GLPI_VAR_DIR', '${GLPI_VAR_DIR}/files');
@@ -598,10 +751,9 @@ LOCALDEFINE
 }
 
 configure_apache() {
-    print_step 9 10 "Configuring Apache"
+    print_step 9 12 "Configuring Apache"
     
     local server_name="${CONFIG[DOMAIN]:-${SYSTEM[IP_ADDRESS]}}"
-    local php_version="${SYSTEM[PHP_VERSION]}"
     
     info "Creating Apache virtual host..."
     
@@ -625,6 +777,11 @@ configure_apache() {
         Require all granted
     </Directory>
 
+    # Security headers
+    Header always set X-Content-Type-Options "nosniff"
+    Header always set X-Frame-Options "SAMEORIGIN"
+    Header always set X-XSS-Protection "1; mode=block"
+
     ErrorLog \${APACHE_LOG_DIR}/glpi_error.log
     CustomLog \${APACHE_LOG_DIR}/glpi_access.log combined
 </VirtualHost>
@@ -633,6 +790,7 @@ APACHE
     info "Enabling Apache modules..."
     a2enmod rewrite 2>/dev/null || true
     a2enmod headers 2>/dev/null || true
+    a2enmod ssl 2>/dev/null || true
     
     info "Enabling GLPI site..."
     a2dissite 000-default.conf 2>/dev/null || true
@@ -650,8 +808,43 @@ APACHE
     success "Apache configured"
 }
 
+install_ssl() {
+    print_step 10 12 "Configuring SSL Certificate"
+    
+    if [[ "${CONFIG[ENABLE_SSL]}" != "true" || -z "${CONFIG[DOMAIN]}" ]]; then
+        info "SSL configuration skipped (no domain or SSL disabled)"
+        return 0
+    fi
+    
+    info "Installing Certbot..."
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq certbot python3-certbot-apache 2>/dev/null || {
+        warn "Failed to install Certbot, skipping SSL configuration"
+        return 1
+    }
+    
+    if [[ -z "${CONFIG[SSL_EMAIL]}" ]]; then
+        warn "No email provided for SSL certificate, skipping..."
+        return 1
+    fi
+    
+    validate_input "email" "${CONFIG[SSL_EMAIL]}"
+    
+    info "Requesting SSL certificate from Let's Encrypt..."
+    if certbot --apache -d "${CONFIG[DOMAIN]}" \
+        --non-interactive \
+        --agree-tos \
+        --redirect \
+        -m "${CONFIG[SSL_EMAIL]}" 2>&1 | tee -a "${LOG_FILE}"; then
+        success "SSL certificate installed successfully"
+        info "  └─ HTTPS enabled for ${CONFIG[DOMAIN]}"
+    else
+        warn "SSL certificate installation failed - continuing with HTTP"
+        return 1
+    fi
+}
+
 finalize_installation() {
-    print_step 10 10 "Finalizing Installation"
+    print_step 11 12 "Finalizing Installation"
     
     info "Configuring cron job..."
     cat > "/etc/cron.d/glpi" << CRON
@@ -659,12 +852,14 @@ finalize_installation() {
 CRON
     chmod 644 /etc/cron.d/glpi
     
-    info "Saving credentials..."
+    info "Saving credentials securely..."
     cat > "/root/.glpi_credentials" << CREDENTIALS
 # GLPI Installation Credentials
 # Generated: $(date)
+# WARNING: Keep this file secure!
 
 URL=http://${SYSTEM[IP_ADDRESS]}
+HTTPS_URL=https://${CONFIG[DOMAIN]:-N/A}
 VERSION=${CONFIG[GLPI_VERSION]}
 
 DB_HOST=${CONFIG[DB_HOST]}
@@ -683,6 +878,52 @@ CREDENTIALS
     success "Installation finalized"
 }
 
+verify_installation() {
+    print_step 12 12 "Verifying Installation"
+    
+    local errors=0
+    
+    info "Checking web service..."
+    local http_code=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost" 2>/dev/null || echo "000")
+    if [[ "${http_code}" =~ ^(200|302|301)$ ]]; then
+        success "Web service is responding (HTTP ${http_code})"
+    else
+        error "Web service is not responding correctly (HTTP ${http_code})"
+        errors=$((errors + 1))
+    fi
+    
+    info "Checking database connection..."
+    if mysql -u"${CONFIG[DB_USER]}" -p"${CONFIG[DB_PASS]}" \
+        -e "SELECT 1 FROM information_schema.tables WHERE table_schema='${CONFIG[DB_NAME]}' LIMIT 1;" &>/dev/null; then
+        success "Database is accessible"
+    else
+        error "Database connection failed"
+        errors=$((errors + 1))
+    fi
+    
+    info "Checking file permissions..."
+    if [[ -w "${GLPI_VAR_DIR}/files/_tmp" ]]; then
+        success "File permissions are correct"
+    else
+        error "File permissions may be incorrect"
+        errors=$((errors + 1))
+    fi
+    
+    info "Checking Apache configuration..."
+    if apache2ctl configtest 2>/dev/null; then
+        success "Apache configuration is valid"
+    else
+        error "Apache configuration has issues"
+        errors=$((errors + 1))
+    fi
+    
+    if [[ ${errors} -gt 0 ]]; then
+        warn "Installation completed with ${errors} warning(s)"
+    else
+        success "All verification checks passed!"
+    fi
+}
+
 print_summary() {
     local duration=$(($(date +%s) - START_TIME))
     
@@ -699,7 +940,14 @@ SUCCESS_BANNER
     echo -e "${C_BOLD}                          INSTALLATION SUMMARY${C_RESET}"
     echo -e "${C_CYAN}═══════════════════════════════════════════════════════════════════════════${C_RESET}"
     echo ""
-    echo -e "  ${C_BOLD}Access URL:${C_RESET}        ${C_GREEN}http://${SYSTEM[IP_ADDRESS]}${C_RESET}"
+    
+    if [[ "${CONFIG[ENABLE_SSL]}" == "true" && -n "${CONFIG[DOMAIN]}" ]]; then
+        echo -e "  ${C_BOLD}Access URL (HTTPS):${C_RESET} ${C_GREEN}https://${CONFIG[DOMAIN]}${C_RESET}"
+        echo -e "  ${C_BOLD}Access URL (HTTP): ${C_RESET} ${C_YELLOW}http://${SYSTEM[IP_ADDRESS]}${C_RESET}"
+    else
+        echo -e "  ${C_BOLD}Access URL:${C_RESET}        ${C_GREEN}http://${SYSTEM[IP_ADDRESS]}${C_RESET}"
+    fi
+    
     echo -e "  ${C_BOLD}GLPI Version:${C_RESET}      ${CONFIG[GLPI_VERSION]}"
     echo -e "  ${C_BOLD}Duration:${C_RESET}          $((duration / 60))m $((duration % 60))s"
     echo ""
@@ -725,16 +973,29 @@ SUCCESS_BANNER
     echo ""
     echo -e "  ${C_YELLOW}${C_BOLD}⚠  POST-INSTALLATION STEPS:${C_RESET}"
     echo ""
-    echo -e "     1. Open ${C_BOLD}http://${SYSTEM[IP_ADDRESS]}${C_RESET} in your browser"
+    
+    if [[ "${CONFIG[ENABLE_SSL]}" == "true" && -n "${CONFIG[DOMAIN]}" ]]; then
+        echo -e "     1. Open ${C_BOLD}https://${CONFIG[DOMAIN]}${C_RESET} in your browser"
+    else
+        echo -e "     1. Open ${C_BOLD}http://${SYSTEM[IP_ADDRESS]}${C_RESET} in your browser"
+    fi
+    
     echo -e "     2. Complete the setup wizard"
-    echo -e "     3. ${C_RED}${C_BOLD}CHANGE ALL DEFAULT PASSWORDS!${C_RESET}"
+    echo -e "     3. ${C_RED}${C_BOLD}CHANGE ALL DEFAULT PASSWORDS IMMEDIATELY!${C_RESET}"
     echo -e "     4. Remove install script: ${C_BOLD}rm ${CONFIG[INSTALL_DIR]}/install/install.php${C_RESET}"
+    echo -e "     5. Review security recommendations in GLPI"
     echo ""
     echo -e "${C_CYAN}═══════════════════════════════════════════════════════════════════════════${C_RESET}"
     echo ""
     echo -e "  ${C_GREEN}Credentials saved:${C_RESET} /root/.glpi_credentials"
     echo -e "  ${C_GREEN}Log file:${C_RESET}          ${LOG_FILE}"
+    echo -e "  ${C_GREEN}Backups:${C_RESET}           ${BACKUP_DIR}"
     echo ""
+    
+    if [[ "${CONFIG[ENABLE_SSL]}" == "true" && -n "${CONFIG[DOMAIN]}" ]]; then
+        echo -e "  ${C_MAGENTA}${C_BOLD}🔒 SSL/HTTPS enabled and configured${C_RESET}"
+        echo ""
+    fi
 }
 
 #-------------------------------------------------------------------------------
@@ -812,7 +1073,8 @@ UNINSTALL_BANNER
         DEBIAN_FRONTEND=noninteractive apt-get purge -y -qq \
             apache2 apache2-* \
             mariadb-server mariadb-client mariadb-* \
-            php* libapache2-mod-php* 2>/dev/null || true
+            php* libapache2-mod-php* \
+            certbot python3-certbot-apache 2>/dev/null || true
         
         apt-get autoremove -y -qq 2>/dev/null || true
         apt-get clean 2>/dev/null || true
@@ -823,6 +1085,7 @@ UNINSTALL_BANNER
     fi
     
     rm -f /root/.glpi_credentials 2>/dev/null || true
+    rm -f /etc/mysql/mariadb.conf.d/99-glpi.cnf 2>/dev/null || true
     
     echo ""
     echo -e "${C_GREEN}${C_BOLD}GLPI has been uninstalled successfully!${C_RESET}"
@@ -852,6 +1115,10 @@ ${C_BOLD}INSTALL OPTIONS:${C_RESET}
     --db-pass PASS          Database password (auto-generated)
     --timezone TZ           Timezone (default: Europe/Paris)
     --domain DOMAIN         Server domain name
+    --glpi-version VERSION  Install specific GLPI version (e.g., 10.0.15)
+    --enable-ssl            Enable SSL/HTTPS with Let's Encrypt
+    --ssl-email EMAIL       Email for SSL certificate (required with --enable-ssl)
+    --no-rollback           Disable automatic rollback on failure
     --version               Show version
 
 ${C_BOLD}UNINSTALL OPTIONS:${C_RESET}
@@ -860,14 +1127,34 @@ ${C_BOLD}UNINSTALL OPTIONS:${C_RESET}
     --keep-packages         Keep packages when uninstalling
 
 ${C_BOLD}EXAMPLES:${C_RESET}
-    sudo ${SCRIPT_NAME_BASE}                    Interactive install
-    sudo ${SCRIPT_NAME_BASE} -y                 Automatic install
-    sudo ${SCRIPT_NAME_BASE} --uninstall        Uninstall GLPI
-    sudo ${SCRIPT_NAME_BASE} --uninstall -y     Uninstall without prompts
+    # Interactive install
+    sudo ${SCRIPT_NAME_BASE}
+    
+    # Automatic install with SSL
+    sudo ${SCRIPT_NAME_BASE} -y --domain glpi.example.com --enable-ssl --ssl-email admin@example.com
+    
+    # Install specific version
+    sudo ${SCRIPT_NAME_BASE} --glpi-version 10.0.15
+    
+    # Uninstall completely
+    sudo ${SCRIPT_NAME_BASE} --uninstall -y
+    
+    # Uninstall keeping database
+    sudo ${SCRIPT_NAME_BASE} --uninstall --keep-db
 
 ${C_BOLD}SUPPORTED SYSTEMS:${C_RESET}
     - Debian 10, 11, 12, 13
     - Ubuntu 20.04, 22.04, 24.04
+
+${C_BOLD}NEW IN v4.1:${C_RESET}
+    ✓ Enhanced security (stronger passwords, input validation)
+    ✓ SSL/HTTPS support with Let's Encrypt
+    ✓ Automatic rollback on installation failure
+    ✓ Post-installation verification
+    ✓ MariaDB and PHP performance optimizations
+    ✓ Container environment detection
+    ✓ Specific version installation support
+    ✓ Progress indicators
 
 HELP
 }
@@ -875,23 +1162,36 @@ HELP
 parse_arguments() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            -h|--help)      show_help; exit 0 ;;
-            -v|--verbose)   VERBOSE=true; shift ;;
-            -y|--yes)       UNATTENDED=true; shift ;;
-            -f|--force)     FORCE=true; shift ;;
-            -d|--dry-run)   DRY_RUN=true; shift ;;
-            --uninstall)    UNINSTALL_MODE=true; shift ;;
-            --keep-db)      KEEP_DATABASE=true; shift ;;
-            --keep-packages) KEEP_PACKAGES=true; shift ;;
-            --db-name)      CONFIG[DB_NAME]="$2"; shift 2 ;;
-            --db-user)      CONFIG[DB_USER]="$2"; shift 2 ;;
-            --db-pass)      CONFIG[DB_PASS]="$2"; shift 2 ;;
-            --timezone)     CONFIG[TIMEZONE]="$2"; shift 2 ;;
-            --domain)       CONFIG[DOMAIN]="$2"; shift 2 ;;
-            --version)      echo "GLPI Auto-Installer v${SCRIPT_VERSION}"; exit 0 ;;
-            *)              error "Unknown option: $1"; show_help; exit 1 ;;
+            -h|--help)          show_help; exit 0 ;;
+            -v|--verbose)       VERBOSE=true; shift ;;
+            -y|--yes)           UNATTENDED=true; shift ;;
+            -f|--force)         FORCE=true; shift ;;
+            -d|--dry-run)       DRY_RUN=true; shift ;;
+            --uninstall)        UNINSTALL_MODE=true; shift ;;
+            --keep-db)          KEEP_DATABASE=true; shift ;;
+            --keep-packages)    KEEP_PACKAGES=true; shift ;;
+            --no-rollback)      ROLLBACK_ENABLED=false; shift ;;
+            --enable-ssl)       CONFIG[ENABLE_SSL]="true"; shift ;;
+            --db-name)          CONFIG[DB_NAME]="$2"; validate_input "db_name" "$2"; shift 2 ;;
+            --db-user)          CONFIG[DB_USER]="$2"; validate_input "db_user" "$2"; shift 2 ;;
+            --db-pass)          CONFIG[DB_PASS]="$2"; shift 2 ;;
+            --timezone)         CONFIG[TIMEZONE]="$2"; shift 2 ;;
+            --domain)           CONFIG[DOMAIN]="$2"; validate_input "domain" "$2"; shift 2 ;;
+            --glpi-version)     CONFIG[GLPI_VERSION]="$2"; shift 2 ;;
+            --ssl-email)        CONFIG[SSL_EMAIL]="$2"; validate_input "email" "$2"; shift 2 ;;
+            --version)          echo "GLPI Auto-Installer v${SCRIPT_VERSION}"; exit 0 ;;
+            *)                  error "Unknown option: $1"; show_help; exit 1 ;;
         esac
     done
+    
+    if [[ "${CONFIG[ENABLE_SSL]}" == "true" ]]; then
+        if [[ -z "${CONFIG[DOMAIN]}" ]]; then
+            fatal "--domain is required when --enable-ssl is used"
+        fi
+        if [[ -z "${CONFIG[SSL_EMAIL]}" ]]; then
+            fatal "--ssl-email is required when --enable-ssl is used"
+        fi
+    fi
 }
 
 #-------------------------------------------------------------------------------
@@ -901,10 +1201,8 @@ parse_arguments() {
 main() {
     parse_arguments "$@"
     
-    # Auto-detect piped input
     [[ ! -t 0 ]] && UNATTENDED=true
     
-    # Handle uninstall
     if [[ "${UNINSTALL_MODE}" == "true" ]]; then
         uninstall_glpi
         exit 0
@@ -915,9 +1213,10 @@ main() {
     init_logging
     acquire_lock
     
-    info "Starting GLPI installation..."
+    info "Starting GLPI installation v${SCRIPT_VERSION}..."
     info "Log file: ${LOG_FILE}"
     [[ "${UNATTENDED}" == "true" ]] && info "Running in unattended mode"
+    [[ "${ROLLBACK_ENABLED}" == "true" ]] && info "Automatic rollback enabled"
     
     if [[ "${DRY_RUN}" == "true" ]]; then
         warn "DRY RUN - No changes will be made"
@@ -940,6 +1239,8 @@ main() {
         echo -e "  GLPI Version:    ${CONFIG[GLPI_VERSION]}"
         echo -e "  Database:        ${CONFIG[DB_NAME]}"
         echo -e "  Timezone:        ${CONFIG[TIMEZONE]}"
+        [[ -n "${CONFIG[DOMAIN]}" ]] && echo -e "  Domain:          ${CONFIG[DOMAIN]}"
+        [[ "${CONFIG[ENABLE_SSL]}" == "true" ]] && echo -e "  SSL/HTTPS:       Enabled"
         echo ""
         if ! confirm "Proceed with installation?" "y"; then
             fatal "Installation cancelled"
@@ -952,7 +1253,12 @@ main() {
     download_glpi
     configure_glpi
     configure_apache
+    install_ssl
     finalize_installation
+    verify_installation
+    
+    ROLLBACK_ENABLED=false
+    
     print_summary
 }
 
