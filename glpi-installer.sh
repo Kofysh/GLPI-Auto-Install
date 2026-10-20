@@ -4,7 +4,7 @@
 set -Eeuo pipefail
 umask 027
 
-VERSION=5.1.0
+VERSION=5.1.1
 MODE=install
 PURGE_DATA=false
 PURGE_DB=false
@@ -83,6 +83,7 @@ help() {
     cat <<EOF
 GLPI Auto-Install $VERSION - Linux server deployments
 Usage: sudo bash glpi-installer.sh [options]
+  (no arguments)           Display the interactive action menu
   -y, --yes                 Non-interactive installation
   -d, --dry-run             Detect platform and show planned actions (no writes)
   --upgrade, --update       Back up and update an existing GLPI installation
@@ -108,6 +109,40 @@ data and SQL by default. Supported install path: /var/www/glpi.
 The target must be a dedicated machine, VM, or LXC with a working init system.
 EOF
 }
+
+select_operation() {
+    # Read from the terminal so the menu also works with curl | sudo bash.
+    if [[ ! -t 0 && ! -t 1 ]] || ! ( : </dev/tty ) 2>/dev/null; then
+        die 'Interactive menu requires a terminal. Use --upgrade, --uninstall or --yes for automation.'
+    fi
+
+    printf '\n%s\n' '======================================'
+    printf ' GLPI Auto-Install %s\n' "$VERSION"
+    printf '%s\n' '======================================'
+    printf '  1) Installer GLPI\n'
+    printf '  2) Mettre a jour GLPI\n'
+    printf '  3) Desinstaller GLPI\n'
+    printf '  0) Quitter\n\n'
+
+    local choice
+    while true; do
+        printf 'Votre choix [0-3] : ' > /dev/tty
+        if ! IFS= read -r choice < /dev/tty; then
+            die 'Aucune selection recue; operation annulee.'
+        fi
+        case "$choice" in
+            1) MODE=install; return 0 ;;
+            2) MODE=upgrade; return 0 ;;
+            3) MODE=uninstall; return 0 ;;
+            0|q|Q) info 'Operation annulee.'; exit 0 ;;
+            *) printf 'Choix invalide. Saisissez 0, 1, 2 ou 3.\n' > /dev/tty ;;
+        esac
+    done
+}
+
+if (($# == 0)); then
+    select_operation
+fi
 
 while (($#)); do
     case "$1" in
