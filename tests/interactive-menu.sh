@@ -25,7 +25,7 @@ assert_choice 3 uninstall
 assert_choice $'invalid\n2' upgrade
 
 cancelled=$(printf '0\n' | script -q -e -c "bash '$sandbox/installer.sh'" /dev/null)
-grep -Fq 'Operation annulee.' <<< "$cancelled"
+grep -Fq 'Opération annulée.' <<< "$cancelled"
 if grep -Fq 'MENU_MODE=' <<< "$cancelled"; then
     echo 'Exit option must not select an operation' >&2
     exit 1
