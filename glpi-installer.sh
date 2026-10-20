@@ -189,7 +189,7 @@ packages() {
         alpine)
             # Alpine PHP packages use a versioned suffix; select the newest available major.
             local n=""
-            for n in 85 84 83 82; do apk search -e "php${n}-fpm" 2>/dev/null | grep -q "^php${n}-fpm" && break; done
+            for n in 84 83 82; do apk search -e "php${n}-fpm" 2>/dev/null | grep -q "^php${n}-fpm" && break; done
             apk search -e "php${n}-fpm" 2>/dev/null | grep -q "^php${n}-fpm" || die 'No supported PHP-FPM package in enabled Alpine repositories'
             PHP_BIN="php${n}"
             FPM_SERVICE="php-fpm${n}"
@@ -483,16 +483,19 @@ EOF
 0-59/2 * * * * $WEB_USER $PHP_BIN $INSTALL_DIR/front/cron.php >/dev/null 2>&1
 EOF
         chmod 644 /etc/cron.d/glpi
-        service_action enable "$( [[ "$OS_FAMILY" == rhel ]] && echo crond || echo cron )" || warn 'Could not enable cron service'
+        local cron_service
+        cron_service=$( [[ "$OS_FAMILY" == rhel ]] && echo crond || echo cron )
+        service_action enable "$cron_service" || warn 'Could not enable cron service'
+        service_action start "$cron_service" || warn 'Could not start cron service'
     fi
 }
 
 configure_tls() {
     "$SSL" || return 0
     if [[ "$OS_FAMILY" == debian ]]; then
-        apt-get install -y certbot python3-certbot-apache
+        apt-get install -y certbot python3-certbot-apache || { warn 'Certbot packages unavailable; set up TLS manually'; return 0; }
     elif [[ "$OS_FAMILY" == rhel ]]; then
-        dnf install -y certbot python3-certbot-apache
+        dnf install -y certbot python3-certbot-apache || { warn 'Certbot packages unavailable; set up TLS manually'; return 0; }
     else
         warn 'Automatic TLS is not available on this family; configure HTTPS with your reverse proxy or Certbot'
         return
