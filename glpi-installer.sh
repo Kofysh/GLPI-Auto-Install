@@ -723,6 +723,156 @@ restore_application_files() {
     done
 }
 
+upgrade_existing() {
+    local current_version current_major target_major answer
+    current_version=$(existing_version)
+    [[ -n "$current_version" ]] || die 'Cannot determine current GLPI version'
+    latest_release
+    version_at_least "$GLPI_VERSION" "$current_version" ||
+        die "Downgrades are not supported ($current_version -> $GLPI_VERSION)"
+    if [[ "$GLPI_VERSION" == "$current_version" ]]; then
+        info "GLPI $current_version is already up to date"
+        return 0
+    fi
+    current_major=${current_version%%.*}
+    target_major=${GLPI_VERSION%%.*}
+    if [[ "$current_major" != "$target_major" && "$ALLOW_MAJOR" != true ]]; then
+        die "Major upgrade ($current_version -> $GLPI_VERSION) requires --allow-major-upgrade"
+    fi
+    info "GLPI upgrade: $current_version -> $GLPI_VERSION"
+    check_runtime
+    download_upgrade_release
+    if [[ "$YES" == false ]]; then
+        printf 'Upgrade GLPI to %s after verified backup? [y/N] ' "$GLPI_VERSION"
+        read -r answer
+        [[ "$answer" == y || "$answer" == Y ]] || die 'Upgrade cancelled'
+    fi
+    glpi_console maintenance:enable || die 'Could not enable GLPI maintenance'
+    MAINTENANCE_ON=true
+    backup_existing upgrade
+    pause_glpi_cron
+    OLD_CODE_DIR="/var/www/.glpi-previous-$-$(date +%s)"
+    mv "$INSTALL_DIR" "$OLD_CODE_DIR"
+    chmod 700 "$OLD_CODE_DIR"
+    CODE_SWAPPED=true
+    mv "$STAGE_DIR/glpi" "$INSTALL_DIR"
+    restore_application_files
+    info 'Applying GLPI database schema migrations'
+    if ! glpi_console db:update; then
+        die "Schema migration failed. Maintenance stays on; restore SQL and code together using $BACKUP_PATH"
+    fi
+    if ! glpi_console maintenance:disable; then
+        die 'Migration finished, but maintenance could not be disabled. Check GLPI manually.'
+    fi
+    MAINTENANCE_ON=false
+    resume_glpi_cron
+    rm -rf -- "${OLD_CODE_DIR:?}"
+    OLD_CODE_DIR=
+    info "GLPI $GLPI_VERSION successfully installed"
+    info "Restore point: $BACKUP_PATH"
+    warn 'Review plugin compatibility. GLPI 11 may require manual plugin migrations.'
+}
+
+remove_owned_integration() {
+    local path
+    for path in "$APACHE_CONF" /etc/apache2/sites-available/glpi.conf \
+                /etc/apache2/sites-available/000-0-glpi.conf /etc/httpd/conf.d/00-glpi.conf \
+                /etc/apache2/vhosts.d/00-glpi.conf /etc/apache2/conf.d/00-glpi.conf; do
+        if [[ -f "$path" ]] && grep -Fq "$INSTALL_DIR" "$path"; then
+            if [[ "$OS_FAMILY" == debian ]] && command -v a2dissite >/dev/null; then
+                a2dissite "$(basename "$path")" >/dev/null 2>&1 || true
+            fi
+            rm -f -- "$path"
+        fi
+    done
+    for path in /etc/cron.d/glpi /etc/periodic/15min/glpi; do
+        if [[ -f "$path" ]] && grep -Fq "$INSTALL_DIR" "$path"; then rm -f -- "$path"; fi
+    done
+    # Remove only the named GLPI pool (never the system default PHP-FPM pool).
+    for path in /etc/php-fpm.d/glpi.conf /etc/php8/fpm/php-fpm.d/glpi.conf; do
+        if [[ -f "$path" ]] && grep -Fq '[glpi]' "$path"; then rm -f -- "$path"; fi
+    done
+    if [[ -d /etc/php ]]; then
+        while IFS= read -r path; do
+            if grep -Fq '[glpi]' "$path"; then rm -f -- "$path"; fi
+        done < <(find /etc/php -type f -name glpi.conf)
+    fi
+    if command -v apache2ctl >/dev/null; then
+        if apache2ctl configtest >/dev/null 2>&1; then
+            service_action reload "$WEB_SERVICE" || warn 'Apache reload failed'
+        else
+            warn 'Apache configuration test failed; inspect other virtual hosts'
+        fi
+    elif command -v httpd >/dev/null; then
+        if httpd -t >/dev/null 2>&1; then
+            service_action reload "$WEB_SERVICE" || warn 'Apache reload failed'
+        fi
+    fi
+}
+
+uninstall_existing() {
+    local answer
+    if [[ "$PURGE_DATA" == true && "$CONFIRM_PURGE" != DELETE-GLPI-DATA ]]; then
+        die 'Data removal also requires --confirm-purge DELETE-GLPI-DATA'
+    fi
+    if [[ "$PURGE_DB" == true && "$CONFIRM_DB_PURGE" != DELETE-GLPI-DATABASE ]]; then
+        die 'SQL removal also requires --confirm-db-purge DELETE-GLPI-DATABASE'
+    fi
+    if [[ "$PURGE_DB" == true && ! -f "$CREDENTIALS" ]]; then
+        die "Dropping SQL requires original credentials metadata: $CREDENTIALS"
+    fi
+    if [[ "$YES" == false ]]; then
+        printf 'Remove GLPI application files (backup first)? [y/N] '
+        read -r answer
+        [[ "$answer" == y || "$answer" == Y ]] || die 'Removal cancelled'
+    fi
+    backup_existing uninstall
+    pause_glpi_cron
+    if [[ "$PURGE_DB" == true ]]; then
+        db_cli -e "DROP DATABASE IF EXISTS \`$DB_NAME\`;" ||
+            die "Cannot drop database $DB_NAME; application unchanged"
+        db_cli -e "DROP USER IF EXISTS '$DB_USER'@'localhost';" ||
+            die "Cannot drop database user $DB_USER; application unchanged"
+        info "Removed local SQL database $DB_NAME and its dedicated user"
+    fi
+    remove_owned_integration
+    rm -rf -- "${INSTALL_DIR:?}"
+    if [[ "$PURGE_DATA" == true ]]; then
+        rm -rf -- "${DATA_DIR:?}" "${CONFIG_DIR:?}" "${GLPI_LOG_DIR:?}"
+        rm -f -- "$CREDENTIALS"
+    fi
+    info 'GLPI code and managed integration files removed; Apache/PHP/MariaDB packages untouched'
+    [[ "$PURGE_DATA" == true ]] || info 'Persistent data, credentials and SQL were retained'
+    info "Verified recovery archive: $BACKUP_PATH"
+}
+
+lifecycle_main() {
+    platform
+    [[ $EUID -eq 0 || "$DRY_RUN" == true ]] || die 'Run as root'
+    identify_existing
+    if [[ "$DRY_RUN" == true ]]; then
+        if [[ "$MODE" == uninstall ]]; then
+            info "DRY RUN: would back up GLPI and remove $INSTALL_DIR"
+            info "DRY RUN: remove persistent files: $PURGE_DATA; remove database: $PURGE_DB"
+        else
+            info "DRY RUN: would back up GLPI, install ${GLPI_VERSION:-latest}, and run db:update"
+        fi
+        info 'DRY RUN: no disk, database or service changes'
+        return 0
+    fi
+    command -v tar >/dev/null || die 'tar is needed for backups'
+    command -v gzip >/dev/null || die 'gzip is needed for backups'
+    command -v sha256sum >/dev/null || die 'sha256sum is needed for backup verification'
+    command -v curl >/dev/null || die 'curl is needed for upgrades'
+    [[ -t 0 || "$YES" == true ]] || die 'Noninteractive operation requires --yes'
+    load_existing_database
+    mkdir -p "$LOG_DIR"
+    LOG_FILE="$LOG_DIR/${MODE}_$(date -u +%Y%m%dT%H%M%SZ).log"
+    touch "$LOG_FILE"
+    chmod 600 "$LOG_FILE"
+    if [[ "$MODE" == upgrade ]]; then upgrade_existing; else uninstall_existing; fi
+}
+
 main() {
     if [[ "$MODE" != install ]]; then
         lifecycle_main
@@ -750,6 +900,6 @@ main() {
     info "Open http://${DOMAIN:-YOUR_SERVER_IP}/ and complete the GLPI web installation wizard."
     info "Credentials: $CREDENTIALS (mode 0600). Change the default GLPI account passwords."
     warn 'Configure HTTPS and restrict network access before exposing GLPI to the internet.'
-    info 'A complete GLPI database upgrade and existing deployments are intentionally out of scope.'
+    info 'For upgrades and removal, use --upgrade or --uninstall.'
 }
 main
