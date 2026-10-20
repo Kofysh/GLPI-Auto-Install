@@ -61,6 +61,9 @@ die() { say ERROR "$*" >&2; exit 1; }
 cleanup() {
     local status=$?
     [[ -z "$TMP_DIR" ]] || rm -rf -- "$TMP_DIR"
+    if [[ -n "$STAGE_DIR" && "$STAGE_DIR" == /var/www/.glpi-stage.* && -d "$STAGE_DIR" ]]; then
+        rm -rf -- "$STAGE_DIR"
+    fi
     if [[ "$MODE" == upgrade && "$MAINTENANCE_ON" == true && "$CODE_SWAPPED" == false ]]; then
         warn 'Restoring normal service after an interrupted pre-migration upgrade.'
         glpi_console maintenance:disable >/dev/null 2>&1 || true
