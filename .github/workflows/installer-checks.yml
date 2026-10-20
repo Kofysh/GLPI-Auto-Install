@@ -1,0 +1,35 @@
+name: Installer checks
+
+on:
+  push:
+    paths:
+      - 'glpi-installer.sh'
+      - '.github/workflows/installer-checks.yml'
+  pull_request:
+    paths:
+      - 'glpi-installer.sh'
+      - '.github/workflows/installer-checks.yml'
+
+jobs:
+  static-checks:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Bash syntax
+        run: bash -n glpi-installer.sh
+      - name: ShellCheck
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y shellcheck
+          shellcheck -S warning glpi-installer.sh
+      - name: Read-only smoke test
+        run: |
+          bash glpi-installer.sh --version
+          bash glpi-installer.sh --help >/dev/null
+          bash glpi-installer.sh --dry-run --glpi-version 11.0.0
+      - name: Reject invalid arguments
+        run: |
+          if bash glpi-installer.sh --db-name 'bad-name' --dry-run; then
+            echo 'Expected invalid database name to fail' >&2
+            exit 1
+          fi
