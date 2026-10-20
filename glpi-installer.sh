@@ -288,6 +288,17 @@ preflight() {
     fi
     local mem disk
     mem=$(awk '/MemTotal:/{print int($2/1024)}' /proc/meminfo)
+    # LXC can expose host MemTotal; prefer its actual cgroup memory limit.
+    local cgroup_bytes=""
+    if [[ -r /sys/fs/cgroup/memory.max ]]; then
+        cgroup_bytes=$(cat /sys/fs/cgroup/memory.max)
+    elif [[ -r /sys/fs/cgroup/memory/memory.limit_in_bytes ]]; then
+        cgroup_bytes=$(cat /sys/fs/cgroup/memory/memory.limit_in_bytes)
+    fi
+    if [[ "$cgroup_bytes" =~ ^[0-9]+$ ]] && (( cgroup_bytes > 0 )); then
+        local cgroup_megabytes=$((cgroup_bytes / 1024 / 1024))
+        if (( cgroup_megabytes < mem )); then mem=$cgroup_megabytes; fi
+    fi
     disk=$(df -Pk /var | awk 'NR==2{print $4}')
     ((mem >= 1024)) || die "Insufficient RAM: ${mem} MiB (minimum 1024 MiB)"
     ((disk >= 4*1024*1024)) || die 'Need at least 4 GiB of free space on /var'
