@@ -783,7 +783,7 @@ restore_application_files() {
 }
 
 upgrade_existing() {
-    local current_version current_major target_major answer
+    local current_version current_major target_major
     current_version=$(existing_version)
     [[ -n "$current_version" ]] || die 'Cannot determine current GLPI version'
     latest_release
@@ -872,7 +872,6 @@ remove_owned_integration() {
 }
 
 uninstall_existing() {
-    local answer
     if [[ "$PURGE_DATA" == true && "$CONFIRM_PURGE" != DELETE-GLPI-DATA ]]; then
         die 'Data removal also requires --confirm-purge DELETE-GLPI-DATA'
     fi
