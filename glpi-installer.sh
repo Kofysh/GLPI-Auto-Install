@@ -138,7 +138,7 @@ platform() {
     case "$OS_FAMILY" in
         debian)
             PKG_MANAGER=apt-get; WEB_USER=www-data; WEB_GROUP=www-data
-            WEB_SERVICE=apache2; APACHE_CONF=/etc/apache2/sites-available/000-glpi.conf
+            WEB_SERVICE=apache2; APACHE_CONF=/etc/apache2/sites-available/000-0-glpi.conf
             ;;
         rhel)
             PKG_MANAGER=dnf; WEB_USER=apache; WEB_GROUP=apache
