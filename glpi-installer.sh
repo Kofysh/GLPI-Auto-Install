@@ -662,7 +662,67 @@ backup_existing() {
         sha256sum -c SHA256SUMS >/dev/null) || die 'Backup verification failed'
     printf 'Operation=%s\nDatabase=%s\nSource=%s\nCreated=%s\n' \
         "$operation" "$DB_NAME" "$INSTALL_DIR" "$stamp" > "$BACKUP_PATH/manifest.txt"
-    chmod 600 "$BACKUP_PATH"
+    chmod 600 "$BACKUP_PATH"/*
+
+    info "Backup verified: $BACKUP_PATH"
+}
+
+pause_glpi_cron() {
+    local path destination
+    for path in /etc/cron.d/glpi /etc/periodic/15min/glpi; do
+        if [[ -f "$path" ]] && grep -Fq "$INSTALL_DIR" "$path"; then
+            mkdir -p "$BACKUP_PATH/paused-cron"
+            destination="$BACKUP_PATH/paused-cron/$(basename "$(dirname "$path")")-$(basename "$path")"
+            mv "$path" "$destination"
+        fi
+    done
+}
+
+resume_glpi_cron() {
+    local path copy
+    for path in /etc/cron.d/glpi /etc/periodic/15min/glpi; do
+        copy="$BACKUP_PATH/paused-cron/$(basename "$(dirname "$path")")-$(basename "$path")"
+        [[ ! -f "$copy" ]] || mv "$copy" "$path"
+    done
+}
+
+download_upgrade_release() {
+    STAGE_DIR=$(mktemp -d /var/www/.glpi-stage.XXXXXXXX)
+    chmod 700 "$STAGE_DIR"
+    local url="https://github.com/glpi-project/glpi/releases/download/$GLPI_VERSION/glpi-$GLPI_VERSION.tgz"
+    curl --fail --location --retry 3 --show-error --silent --proto '=https' --tlsv1.2 \
+        "$url" -o "$STAGE_DIR/release.tgz" || die 'Could not download official release'
+    tar -tzf "$STAGE_DIR/release.tgz" > "$STAGE_DIR/members" || die 'Invalid release archive'
+    grep -q '^glpi/' "$STAGE_DIR/members" || die 'Missing glpi root in archive'
+    if grep -Eq '(^/|(^|/)\.\.(/|$))' "$STAGE_DIR/members"; then
+        die 'Unsafe archive member path'
+    fi
+    tar -xzf "$STAGE_DIR/release.tgz" --no-same-owner -C "$STAGE_DIR"
+    [[ -f "$STAGE_DIR/glpi/bin/console" && -d "$STAGE_DIR/glpi/public" ]] ||
+        die 'Incomplete release archive'
+}
+
+restore_application_files() {
+    local folder
+    for folder in config files plugins marketplace; do
+        if [[ -d "$OLD_CODE_DIR/$folder" ]]; then
+            mkdir -p "$INSTALL_DIR/$folder"
+            cp -a "$OLD_CODE_DIR/$folder/." "$INSTALL_DIR/$folder/"
+        fi
+    done
+    if [[ -f "$OLD_CODE_DIR/inc/downstream.php" ]]; then
+        cp -a "$OLD_CODE_DIR/inc/downstream.php" "$INSTALL_DIR/inc/downstream.php"
+    fi
+    chown -R root:root "$INSTALL_DIR"
+    find "$INSTALL_DIR" -type d -exec chmod 755 {} +
+    find "$INSTALL_DIR" -type f -exec chmod 644 {} +
+    for folder in config files plugins marketplace; do
+        if [[ -d "$INSTALL_DIR/$folder" ]]; then
+            chown -R "$WEB_USER:$WEB_GROUP" "$INSTALL_DIR/$folder"
+        fi
+    done
+}
+
 main() {
     if [[ "$MODE" != install ]]; then
         lifecycle_main
