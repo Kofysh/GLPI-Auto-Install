@@ -2,7 +2,7 @@
 
 Installateur Bash pour déployer **GLPI sur un serveur Linux dédié, une machine virtuelle KVM ou un conteneur LXC**. Il prépare Apache, PHP-FPM, MariaDB, la structure de fichiers GLPI et les tâches planifiées. La configuration initiale de GLPI et la création des comptes restent à terminer dans l'assistant Web.
 
-> **Version 5.0 : changement important.** L'installateur est réservé aux **nouvelles installations**. Il ne remplace plus une installation existante, ne supprime plus de bases de données et ne désinstalle plus automatiquement des paquets partagés. Ne l'utilisez pas pour une migration ou une mise à jour.
+> **Version 5.1 :** installation neuve, mise à jour et désinstallation contrôlée. Les opérations sur une ancienne installation réalisent une sauvegarde des fichiers et de la base SQL avant toute modification. Une désinstallation simple conserve les données. Les paquets partagés Apache, PHP et MariaDB ne sont jamais purgés.
 
 ## Plateformes
 
@@ -20,7 +20,7 @@ La présence d'un système dans cette liste **ne signifie pas que toutes ses ver
 
 ## Prérequis
 
-- Installation **neuve** sur un serveur dédié à GLPI ; compte `root` ou `sudo`.
+- Serveur dédié à GLPI ; compte `root` ou `sudo`. Pour une mise à jour ou une désinstallation, GLPI doit être situé dans `/var/www/glpi`.
 - 1 Gio de RAM minimum et 4 Gio libres sur `/var` (2 Gio ou plus de RAM recommandés).
 - Accès HTTPS à GitHub pour récupérer la version officielle GLPI ; `curl` et `tar` sont nécessaires.
 - **GLPI 11 : PHP >= 8.2 et MariaDB >= 10.5 ou MySQL >= 8.0**. Les modules PHP obligatoires sont vérifiés après l'installation des paquets.
@@ -40,8 +40,6 @@ bash -n glpi-installer.sh
 sudo bash glpi-installer.sh --dry-run
 sudo bash glpi-installer.sh
 ```
-
-> Pour tester cette refonte avant son intégration à `main`, utiliser le fichier de la branche `feat/multi-distro-production-installer` à la place du lien ci-dessus.
 
 Mode non interactif :
 
@@ -69,7 +67,14 @@ Sans variable de configuration, un mot de passe aléatoire est généré. Le fic
 
 | Option | Description |
 | --- | --- |
-| `-y`, `--yes` | Confirme l'installation non interactive |
+| `-y`, `--yes` | Confirme une opération non interactive (sans contourner les confirmations de purge) |
+| `--upgrade`, `--update` | Met à jour l'instance existante avec sauvegarde préalable |
+| `--allow-major-upgrade` | Autorise une migration majeure après vérification des plugins |
+| `--uninstall` | Supprime l'application et sa configuration de service, conserve SQL et données |
+| `--purge-data` | Supprime aussi données et configuration, après sauvegarde |
+| `--purge-db` | Supprime aussi la base SQL locale et son utilisateur dédié |
+| `--confirm-purge TOKEN` | Confirmation obligatoire : `DELETE-GLPI-DATA` |
+| `--confirm-db-purge TOKEN` | Confirmation obligatoire : `DELETE-GLPI-DATABASE` |
 | `-d`, `--dry-run` | Vérifie le type d'OS et décrit le déploiement sans modifier l'hôte |
 | `--glpi-version X.Y.Z` | Installe une archive officielle 10.x ou 11.x spécifique |
 | `--db-name`, `--db-user` | Personnalise la base et son compte dédié |
@@ -79,7 +84,61 @@ Sans variable de configuration, un mot de passe aléatoire est généré. Le fic
 | `--enable-ssl`, `--ssl-email` | Certificat Let's Encrypt (prise en charge automatique sur Debian/RHEL) |
 | `--help`, `--version` | Aide et numéro de version |
 
-Les anciennes options `--uninstall`, `--force`, `--skip-checks`, `--no-rollback`, `--keep-db`, `--keep-packages` ont été retirées pour éviter des actions accidentellement destructives sur un serveur de production.
+Les anciens raccourcis dangereux `--force`, `--skip-checks`, `--no-rollback`, `--keep-db`, `--keep-packages` restent indisponibles.
+
+## Mise à jour d'une installation existante
+
+La mise à jour conserve la base, les fichiers et les plugins. Elle met GLPI en maintenance, réalise une sauvegarde vérifiée, remplace les fichiers de l'application, puis exécute `php bin/console db:update --no-interaction` sous l'utilisateur du serveur Web.
+
+```bash
+# Simulation sans modification
+sudo bash glpi-installer.sh --upgrade --dry-run
+
+# Mise à jour vers la dernière version stable
+sudo bash glpi-installer.sh --upgrade
+
+# Installation d'une version cible précise
+sudo bash glpi-installer.sh --upgrade --glpi-version 11.0.1
+
+# Migration majeure, après revue des plugins et test sur une copie
+sudo bash glpi-installer.sh --upgrade --allow-major-upgrade
+```
+
+Pour les installations manuelles ou héritées ne disposant pas de `/root/.glpi_credentials`, spécifier **la base locale réellement utilisée** avec `--db-name NOM` ; le script doit pouvoir effectuer un export SQL avec l'authentification root par socket. Les bases distantes ne sont pas gérées par cette procédure. Les versions de PHP et les extensions nécessaires doivent déjà être installées : `--upgrade` ne modifie pas les paquets système.
+
+**Avant une migration GLPI 10 → 11 :** vérifier les plugins FormCreator, Generic Objects et Fields et leurs migrations spécifiques. Un changement majeur nécessite `--allow-major-upgrade`. En cas d'erreur pendant la migration SQL, l'installateur laisse GLPI en maintenance pour éviter une reprise sur un schéma incomplet. Une restauration exige **les fichiers et la base SQL du même point de sauvegarde** ; ne pas réimporter le dump dans une base partiellement migrée sans l'avoir vidée/recréée.
+
+## Désinstallation et conservation des données
+
+```bash
+# Simulation
+sudo bash glpi-installer.sh --uninstall --dry-run
+
+# Enlever seulement l'application et ses fichiers de configuration Apache/cron/PHP-FPM
+# Conserver la base SQL, les données GLPI et les identifiants
+sudo bash glpi-installer.sh --uninstall
+
+# Suppression des données/configuration en plus de l'application
+sudo bash glpi-installer.sh --uninstall --yes \
+  --purge-data --confirm-purge DELETE-GLPI-DATA
+
+# Suppression complète de GLPI ET de sa base SQL locale (irréversible hors sauvegarde)
+sudo bash glpi-installer.sh --uninstall --yes \
+  --purge-data --confirm-purge DELETE-GLPI-DATA \
+  --purge-db --confirm-db-purge DELETE-GLPI-DATABASE
+```
+
+Les opérations de purge sont explicites, y compris avec `--yes`. La suppression SQL requiert le fichier d'identifiants de l'installateur afin d'identifier le compte dédié ; aucun compte MySQL global ni paquet de serveur partagé ne doit être supprimé. Le script ne cherche pas GLPI hors de `/var/www/glpi` et refuse les répertoires GLPI symboliques non gérés.
+
+### Sauvegardes de récupération
+
+Les sauvegardes sont enregistrées dans `/var/backups/glpi-installer/<opération>_<date>_<identifiant>/` avec :
+
+- `files.tar.gz` : fichiers GLPI, plugins, configuration, données et journaux locaux ;
+- `database.sql.gz` : export transactionnel de la base ;
+- `SHA256SUMS` et `manifest.txt` : empreintes et métadonnées.
+
+Les archives sont privées (répertoire en mode `0700`) et **ne sont pas automatiquement effacées**. La présence d'empreintes valides ne garantit pas, à elle seule, la restaurabilité : tester périodiquement une restauration sur une VM de préproduction.
 
 ## Après l'installation
 
@@ -102,14 +161,15 @@ Les anciennes options `--uninstall`, `--force`, `--skip-checks`, `--no-rollback`
 
 ## Limites et reprise d'erreur
 
-- L'installateur **ne modifie ni ne supprime** une ancienne instance GLPI, sa base ou son compte SQL.
-- En cas d'échec après la création de la nouvelle base, celle-ci est conservée. L'administrateur doit examiner l'état de la machine et terminer ou nettoyer manuellement avant une nouvelle tentative.
-- Il n'effectue pas de migration de GLPI 10 vers 11, d'upgrade SQL ou de sauvegarde/restauration automatique.
-- Les règles du pare-feu et le reverse proxy ne sont pas modifiés.
-- L'intégration Apache avec SELinux enforcing, les chemins PHP-FPM SUSE/Alpine et les modules fournis par chaque dépôt demandent des tests réels sur les distributions concernées.
-- Le mode `--dry-run` ne vérifie ni la disponibilité des paquets ni les droits effectifs des services : il ne remplace pas un test sur VM/LXC.
+- Seul le chemin local `/var/www/glpi` est reconnu pour les anciennes installations ; les instances personnalisées nécessitent une reprise manuelle.
+- Les versions anciennes de PHP/MariaDB doivent être mises à niveau séparément avant de cibler GLPI 11.
+- La sauvegarde avant migration/désinstallation est obligatoire, mais ne remplace pas une politique de sauvegarde externalisée.
+- Aucune restauration SQL automatique n'est lancée sur un schéma partiellement migré.
+- Les règles de pare-feu et les reverse proxies ne sont pas modifiés.
+- L'intégration SELinux, SUSE et Alpine doit être validée en préproduction.
+- Le mode `--dry-run` ne valide pas les droits effectifs des services ni toutes les dépendances.
 
-La documentation officielle fait foi pour les prérequis : [prérequis GLPI](https://glpi-install.readthedocs.io/en/latest/prerequisites.html) et [installation](https://glpi-install.readthedocs.io/en/latest/install/).
+Se référer aux procédures officielles : [mise à jour GLPI](https://glpi-install.readthedocs.io/en/latest/update.html), [CLI de maintenance](https://glpi-install.readthedocs.io/en/latest/command-line.html) et [migration des plugins GLPI 10 → 11](https://help.glpi-project.org/tutorials/fr/procedures/migrate-of-specific-plugins-from-glpi-10-to-glpi-11).
 
 ## Contribution
 
