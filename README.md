@@ -2,7 +2,7 @@
 
 Installateur Bash pour déployer **GLPI sur un serveur Linux dédié, une machine virtuelle KVM ou un conteneur LXC**. Il prépare Apache, PHP-FPM, MariaDB, la structure de fichiers GLPI et les tâches planifiées. La configuration initiale de GLPI et la création des comptes restent à terminer dans l'assistant Web.
 
-> **Version 5.1 :** installation neuve, mise à jour et désinstallation contrôlée. Les opérations sur une ancienne installation réalisent une sauvegarde des fichiers et de la base SQL avant toute modification. Une désinstallation simple conserve les données. Les paquets partagés Apache, PHP et MariaDB ne sont jamais purgés.
+> **Version 5.1.1 :** installation neuve, mise à jour et désinstallation contrôlée. Les opérations sur une ancienne installation réalisent une sauvegarde des fichiers et de la base SQL avant toute modification. Une désinstallation simple conserve les données. Les paquets partagés Apache, PHP et MariaDB ne sont jamais purgés.
 
 ## Plateformes
 
@@ -31,6 +31,28 @@ L'installateur utilise les dépôts standards de la distribution. Il n'ajoute pa
 Sur les systèmes RHEL 9 et dérivés, le script active le module officiel `php:8.2` avant d'installer les paquets. Si un autre flux PHP est déjà actif ou que le dépôt AppStream requis est absent, il s'arrête plutôt que de changer silencieusement une installation en place. Sur Alpine, il faut activer le dépôt `community` correspondant à la version installée pour disposer des paquets PHP-FPM.
 
 ## Installation
+
+### Menu interactif
+
+Lancez le script **sans argument** pour choisir l'opération directement dans le terminal :
+
+```bash
+sudo bash glpi-installer.sh
+```
+
+```text
+GLPI Auto-Install 5.1.1
+
+  1) Installer GLPI
+  2) Mettre à jour GLPI
+  3) Désinstaller GLPI
+  0) Quitter
+
+Votre choix [0-3] :
+```
+
+La sélection ouvre le parcours d'installation, de mise à jour ou de désinstallation, avec les confirmations existantes. Une saisie incorrecte affiche à nouveau l'invite. Le choix `0` quitte sans effectuer de modification. Les appels avec arguments (par exemple `--upgrade`, `--uninstall` et `--yes`) passent directement au mode indiqué. Un terminal interactif est nécessaire pour le menu ; un lancement sans argument depuis un processus non interactif échoue sans lancer d'installation.
+
 
 Télécharger et inspecter le script avant de l'exécuter :
 
