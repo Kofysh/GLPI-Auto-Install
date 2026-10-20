@@ -6,6 +6,7 @@ umask 027
 
 VERSION=5.1.1
 MODE=install
+MENU_SELECTED=false
 PURGE_DATA=false
 PURGE_DB=false
 CONFIRM_PURGE=
@@ -110,6 +111,23 @@ The target must be a dedicated machine, VM, or LXC with a working init system.
 EOF
 }
 
+confirm_operation() {
+    local prompt=$1 answer
+    if [[ -t 0 ]]; then
+        printf '%s [o/N] ' "$prompt"
+        IFS= read -r answer || die 'Impossible de lire la confirmation.'
+    elif [[ "$MENU_SELECTED" == true ]] && ( : </dev/tty ) 2>/dev/null; then
+        printf '%s [o/N] ' "$prompt" > /dev/tty
+        IFS= read -r answer < /dev/tty || die 'Impossible de lire la confirmation.'
+    else
+        die 'Un terminal interactif est nécessaire pour confirmer. Utilisez --yes en automatisation.'
+    fi
+    case "$answer" in
+        o|O|oui|Oui|OUI|y|Y|yes|YES) return 0 ;;
+        *) die 'Opération annulée.' ;;
+    esac
+}
+
 select_operation() {
     # Read from the terminal so the menu also works with curl | sudo bash.
     if [[ ! -t 0 && ! -t 1 ]] || ! ( : </dev/tty ) 2>/dev/null; then
@@ -131,9 +149,9 @@ select_operation() {
             die 'Aucune sélection reçue ; opération annulée.'
         fi
         case "$choice" in
-            1) MODE=install; return 0 ;;
-            2) MODE=upgrade; return 0 ;;
-            3) MODE=uninstall; return 0 ;;
+            1) MODE=install; MENU_SELECTED=true; return 0 ;;
+            2) MODE=upgrade; MENU_SELECTED=true; return 0 ;;
+            3) MODE=uninstall; MENU_SELECTED=true; return 0 ;;
             0|q|Q) info 'Opération annulée.'; exit 0 ;;
             *) printf 'Choix invalide. Saisissez 0, 1, 2 ou 3.\n' > /dev/tty ;;
         esac
@@ -396,10 +414,7 @@ preflight() {
     command -v curl >/dev/null || die 'curl is required (install curl first)'
     command -v tar >/dev/null || die 'tar is required (install tar first)'
     if [[ "$YES" == false ]]; then
-        [[ -t 0 ]] || die 'Non-interactive shell: pass --yes'
-        printf 'Install GLPI on this dedicated %s server? [y/N] ' "$OS_ID"
-        read -r answer
-        [[ "$answer" == y || "$answer" == Y ]] || die 'Cancelled'
+        confirm_operation "Installer GLPI sur ce serveur $OS_ID ?"
     fi
 }
 
@@ -788,15 +803,13 @@ upgrade_existing() {
     check_database_version
     download_upgrade_release
     if [[ "$YES" == false ]]; then
-        printf 'Upgrade GLPI to %s after verified backup? [y/N] ' "$GLPI_VERSION"
-        read -r answer
-        [[ "$answer" == y || "$answer" == Y ]] || die 'Upgrade cancelled'
+        confirm_operation "Mettre à jour GLPI vers $GLPI_VERSION après sauvegarde ?"
     fi
     glpi_console maintenance:enable || die 'Could not enable GLPI maintenance'
     MAINTENANCE_ON=true
     backup_existing upgrade
     pause_glpi_cron
-    OLD_CODE_DIR="/var/www/.glpi-previous-$-$(date +%s)"
+    OLD_CODE_DIR="/var/www/.glpi-previous-${BASHPID}-$(date +%s)"
     mv "$INSTALL_DIR" "$OLD_CODE_DIR"
     chmod 700 "$OLD_CODE_DIR"
     CODE_SWAPPED=true
@@ -870,9 +883,7 @@ uninstall_existing() {
         die "Dropping SQL requires original credentials metadata: $CREDENTIALS"
     fi
     if [[ "$YES" == false ]]; then
-        printf 'Remove GLPI application files (backup first)? [y/N] '
-        read -r answer
-        [[ "$answer" == y || "$answer" == Y ]] || die 'Removal cancelled'
+        confirm_operation 'Désinstaller GLPI après sauvegarde des fichiers et de la base ?'
     fi
     backup_existing uninstall
     pause_glpi_cron
@@ -912,7 +923,8 @@ lifecycle_main() {
     command -v gzip >/dev/null || die 'gzip is needed for backups'
     command -v sha256sum >/dev/null || die 'sha256sum is needed for backup verification'
     command -v curl >/dev/null || die 'curl is needed for upgrades'
-    [[ -t 0 || "$YES" == true ]] || die 'Noninteractive operation requires --yes'
+    [[ -t 0 || "$YES" == true || "$MENU_SELECTED" == true ]] ||
+        die 'Noninteractive operation requires --yes'
     load_existing_database
     mkdir -p "$LOG_DIR"
     LOG_FILE="$LOG_DIR/${MODE}_$(date -u +%Y%m%dT%H%M%SZ).log"
