@@ -43,4 +43,17 @@ if bash "$sandbox/installer.sh" --help | grep -q 'MENU_MODE='; then
     exit 1
 fi
 
+# Confirmations must be read from the controlling terminal, even when stdin
+# supplies the installer source (as in curl | sudo bash).
+sed '/^    select_operation$/a\    confirm_operation "Confirmer"; printf "CONFIRMED=%s\\n" "$MODE"; exit 0' \
+    glpi-installer.sh > "$sandbox/confirm.sh"
+
+confirmed=$(printf '2\no\n' | script -q -e -c "bash '$sandbox/confirm.sh'" /dev/null)
+grep -Fq 'CONFIRMED=upgrade' <<< "$confirmed"
+
+if printf '3\nn\n' | script -q -e -c "bash '$sandbox/confirm.sh'" /dev/null | grep -Fq 'CONFIRMED='; then
+    echo 'A declined confirmation unexpectedly proceeded' >&2
+    exit 1
+fi
+
 echo 'Interactive operation menu tests passed'
