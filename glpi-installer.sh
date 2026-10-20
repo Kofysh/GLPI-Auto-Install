@@ -4,7 +4,20 @@
 set -Eeuo pipefail
 umask 027
 
-VERSION=5.0.0
+VERSION=5.1.0
+MODE=install
+PURGE_DATA=false
+PURGE_DB=false
+CONFIRM_PURGE=
+CONFIRM_DB_PURGE=
+ALLOW_MAJOR=false
+DB_NAME_EXPLICIT=false
+BACKUP_ROOT=/var/backups/glpi-installer
+BACKUP_PATH=
+MAINTENANCE_ON=false
+CODE_SWAPPED=false
+OLD_CODE_DIR=
+STAGE_DIR=
 INSTALL_DIR=/var/www/glpi
 DATA_DIR=/var/lib/glpi
 CONFIG_DIR=/etc/glpi
@@ -48,19 +61,31 @@ die() { say ERROR "$*" >&2; exit 1; }
 cleanup() {
     local status=$?
     [[ -z "$TMP_DIR" ]] || rm -rf -- "$TMP_DIR"
+    if [[ "$MODE" == upgrade && "$MAINTENANCE_ON" == true && "$CODE_SWAPPED" == false ]]; then
+        warn 'Restoring normal service after an interrupted pre-migration upgrade.'
+        glpi_console maintenance:disable >/dev/null 2>&1 || true
+    fi
     if ((status != 0)); then
-        warn "Installation interrupted. Existing GLPI databases and installations were not removed."
-        [[ -z "$LOG_FILE" ]] || warn "See $LOG_FILE for diagnostics (secrets are never logged)."
+        warn "The $MODE operation was interrupted; inspect the instance and backup."
+        [[ -z "$BACKUP_PATH" ]] || warn "Recovery backup: $BACKUP_PATH"
+        [[ -z "$LOG_FILE" ]] || warn "Diagnostic log: $LOG_FILE"
     fi
 }
 trap cleanup EXIT
 
 help() {
     cat <<EOF
-GLPI Auto-Install $VERSION - fresh Linux server deployments
+GLPI Auto-Install $VERSION - Linux server deployments
 Usage: sudo bash glpi-installer.sh [options]
   -y, --yes                 Non-interactive installation
   -d, --dry-run             Detect platform and show planned actions (no writes)
+  --upgrade, --update       Back up and update an existing GLPI installation
+  --allow-major-upgrade     Allow GLPI 10 -> 11 migration after plugin review
+  --uninstall               Back up and remove GLPI application code
+  --purge-data              Also remove GLPI data and configuration
+  --purge-db                Also remove local GLPI database/user
+  --confirm-purge TOKEN     DELETE-GLPI-DATA (required with --purge-data)
+  --confirm-db-purge TOKEN  DELETE-GLPI-DATABASE (required with --purge-db)
   --glpi-version X.Y.Z      Pin an official GLPI release
   --db-name NAME            Database name (default: glpi_db)
   --db-user USER            Database user (default: glpi_user)
@@ -72,7 +97,8 @@ Usage: sudo bash glpi-installer.sh [options]
   -h, --help                Show help
   --version                 Show installer version
 
-This installer never upgrades, replaces, or uninstalls existing GLPI instances.
+Upgrade and removal both require verified backups. Removal preserves persistent
+data and SQL by default. Supported install path: /var/www/glpi.
 The target must be a dedicated machine, VM, or LXC with a working init system.
 EOF
 }
@@ -82,13 +108,22 @@ while (($#)); do
         -h|--help) help; exit 0 ;;
         --version) printf '%s\n' "$VERSION"; exit 0 ;;
         -d|--dry-run) DRY_RUN=true; shift ;;
+        --upgrade|--update) [[ "$MODE" == install ]] || die 'Choose one operation'; MODE=upgrade; shift ;;
+        --uninstall) [[ "$MODE" == install ]] || die 'Choose one operation'; MODE=uninstall; shift ;;
+        --allow-major-upgrade) ALLOW_MAJOR=true; shift ;;
+        --purge-data) PURGE_DATA=true; shift ;;
+        --purge-db) PURGE_DB=true; shift ;;
+        --confirm-purge|--confirm-db-purge)
+            (($# >= 2)) || die "Missing value for $1"
+            if [[ "$1" == --confirm-purge ]]; then CONFIRM_PURGE=$2; else CONFIRM_DB_PURGE=$2; fi
+            shift 2 ;;
         -y|--yes) YES=true; shift ;;
         --enable-ssl) SSL=true; shift ;;
         --glpi-version|--db-name|--db-user|--db-pass|--timezone|--domain|--ssl-email)
             (($# >= 2)) || die "Missing value for $1"
             case "$1" in
                 --glpi-version) GLPI_VERSION=$2 ;;
-                --db-name) DB_NAME=$2 ;;
+                --db-name) DB_NAME=$2; DB_NAME_EXPLICIT=true ;;
                 --db-user) DB_USER=$2 ;;
                 --db-pass) DB_PASS=$2 ;;
                 --timezone) TIMEZONE=$2 ;;
@@ -96,7 +131,7 @@ while (($#)); do
                 --ssl-email) SSL_EMAIL=$2 ;;
             esac
             shift 2 ;;
-        --force|--skip-checks|--no-rollback|--uninstall|--keep-db|--keep-packages)
+        --force|--skip-checks|--no-rollback|--keep-db|--keep-packages)
             die "The legacy option $1 is not supported: unsafe overrides/uninstall were removed. See --help." ;;
         *) die "Unknown argument: $1" ;;
     esac
@@ -109,6 +144,13 @@ done
 [[ "$TIMEZONE" =~ ^[A-Za-z_]+(/[A-Za-z0-9_+-]+)*$ ]] || die 'Invalid timezone'
 [[ -z "$DOMAIN" || "$DOMAIN" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] || die 'Invalid domain'
 [[ -z "$SSL_EMAIL" || "$SSL_EMAIL" =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]] || die 'Invalid SSL email'
+[[ "$PURGE_DB" == false || "$PURGE_DATA" == true ]] || die '--purge-db requires --purge-data'
+if [[ "$MODE" != uninstall && ( "$PURGE_DATA" == true || "$PURGE_DB" == true ) ]]; then
+    die '--purge-data and --purge-db require --uninstall'
+fi
+if [[ "$MODE" != upgrade && "$ALLOW_MAJOR" == true ]]; then
+    die '--allow-major-upgrade requires --upgrade'
+fi
 if "$SSL"; then
     [[ -n "$DOMAIN" && -n "$SSL_EMAIL" ]] || die 'SSL requires --domain and --ssl-email'
 fi
@@ -535,6 +577,10 @@ EOF
 }
 
 main() {
+    if [[ "$MODE" != install ]]; then
+        lifecycle_main
+        return
+    fi
     platform
     preflight
     mkdir -p "$LOG_DIR"
