@@ -1,338 +1,116 @@
-<p align="center">
-  <img src="https://raw.githubusercontent.com/glpi-project/glpi/main/public/pics/logos/logo-GLPI-250-black.png" alt="GLPI Logo" width="200"/>
-</p>
+# GLPI Auto-Install
 
-<h1 align="center">🚀 GLPI Auto-Install</h1>
+Installateur Bash pour déployer **GLPI sur un serveur Linux dédié, une machine virtuelle KVM ou un conteneur LXC**. Il prépare Apache, PHP-FPM, MariaDB, la structure de fichiers GLPI et les tâches planifiées. La configuration initiale de GLPI et la création des comptes restent à terminer dans l'assistant Web.
 
-<p align="center">
-  <strong>Professional automated installer for GLPI</strong><br>
-  Deploy GLPI in minutes on any supported Linux distribution
-</p>
+> **Version 5.0 : changement important.** L'installateur est réservé aux **nouvelles installations**. Il ne remplace plus une installation existante, ne supprime plus de bases de données et ne désinstalle plus automatiquement des paquets partagés. Ne l'utilisez pas pour une migration ou une mise à jour.
 
-<p align="center">
-  <a href="#-features">Features</a> •
-  <a href="#-supported-systems">Supported Systems</a> •
-  <a href="#-quick-start">Quick Start</a> •
-  <a href="#-usage">Usage</a> •
-  <a href="#-options">Options</a> •
-  <a href="#-license">License</a>
-</p>
+## Plateformes
 
-<p align="center">
-  <img src="https://img.shields.io/badge/version-4.0.0-blue.svg" alt="Version"/>
-  <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License"/>
-  <img src="https://img.shields.io/badge/GLPI-10.x%20%7C%2011.x-orange.svg" alt="GLPI Version"/>
-  <img src="https://img.shields.io/badge/shell-bash-lightgrey.svg" alt="Shell"/>
-</p>
+| Famille | Distributions visées | Gestionnaire de paquets | Init | Niveau de prise en charge |
+| --- | --- | --- | --- | --- |
+| Debian | Debian 12+, Ubuntu 24.04 LTS+ | `apt` | systemd | Chemin principal |
+| RHEL | RHEL, Rocky, Alma, Oracle Linux et CentOS Stream 9+ | `dnf` | systemd | Compatible sous réserve de dépôts PHP 8.2+ / MariaDB 10.5+ |
+| Fedora Server | Version actuellement maintenue | `dnf` | systemd | Compatible sous réserve des versions disponibles |
+| openSUSE / SLES | Versions maintenues, disposant de PHP 8.2+ | `zypper` | systemd | **Expérimental : tester en préproduction** |
+| Alpine Linux | Alpine 3.20+ | `apk` | OpenRC | **Expérimental : tester en préproduction** |
 
----
+La présence d'un système dans cette liste **ne signifie pas que toutes ses versions ou variantes ont été testées**. Les dérivées Linux non reconnues, les systèmes Windows et BSD, ainsi que les conteneurs Docker/Podman, ne sont pas pris en charge par ce script. Pour ces derniers, utilisez un déploiement GLPI dédié.
 
-## 📋 Description
+**KVM / Proxmox / LXC :** le type de virtualisation ne modifie pas les dépendances GLPI. L'invité doit disposer d'un réseau fonctionnel, d'un gestionnaire de services actif, des droits administrateur et de l'espace nécessaire. Sur un conteneur LXC, vérifier notamment que systemd (ou OpenRC pour Alpine) démarre bien les services.
 
-**GLPI Auto-Install** is a professional Bash script that fully automates the installation of [GLPI](https://glpi-project.org/) (IT Asset Management Software) on Linux servers. The script automatically detects your operating system, downloads the latest GLPI version, and configures the entire LAMP stack.
+## Prérequis
 
-## ✨ Features
+- Installation **neuve** sur un serveur dédié à GLPI ; compte `root` ou `sudo`.
+- 1 Gio de RAM minimum et 4 Gio libres sur `/var` (2 Gio ou plus de RAM recommandés).
+- Accès HTTPS à GitHub pour récupérer la version officielle GLPI ; `curl` et `tar` sont nécessaires.
+- **GLPI 11 : PHP >= 8.2 et MariaDB >= 10.5 ou MySQL >= 8.0**. Les modules PHP obligatoires sont vérifiés après l'installation des paquets.
+- DNS public pointant vers le serveur et ports HTTP/HTTPS accessibles si vous demandez un certificat Let's Encrypt.
 
-| Feature | Description |
-|---------|-------------|
-| 🔍 **Auto-detection** | Detects OS, version and automatically configures parameters |
-| 📦 **Latest GLPI version** | Automatically fetches and installs the latest stable release via GitHub API |
-| 🛡️ **Enhanced security** | Data separation outside webroot, secure HTTP headers, strict permissions |
-| 🔄 **Rollback system** | Automatic rollback of changes on failure |
-| 📝 **Full logging** | Detailed logs in `/var/log/glpi-installer/` |
-| 🔐 **Secure passwords** | Automatic cryptographic password generation |
-| ⚙️ **SELinux support** | Full support for RHEL/CentOS/Rocky/Alma |
-| 🎨 **Intuitive interface** | Progress bars, colors and clear messages |
-| 💾 **Auto backup** | Backs up existing installation before replacement |
-| 🌐 **Direct access** | GLPI accessible directly on IP (no /glpi suffix needed) |
+L'installateur utilise les dépôts standards de la distribution. Il n'ajoute pas de dépôts PHP non officiels et **refuse de poursuivre** si les versions obtenues ne respectent pas les prérequis.
 
-## 💻 Supported Systems
+Sur les systèmes RHEL 9 et dérivés, le script active le module officiel `php:8.2` avant d'installer les paquets. Si un autre flux PHP est déjà actif ou que le dépôt AppStream requis est absent, il s'arrête plutôt que de changer silencieusement une installation en place. Sur Alpine, il faut activer le dépôt `community` correspondant à la version installée pour disposer des paquets PHP-FPM.
 
-| Distribution | Versions |
-|--------------|----------|
-| **Debian** | 10, 11, 12, 13 |
-| **Ubuntu** | 20.04, 22.04, 24.04 |
-| **RHEL** | 8, 9 |
-| **CentOS** | 8, 9 |
-| **Rocky Linux** | 8, 9 |
-| **AlmaLinux** | 8, 9 |
-| **Fedora** | 38, 39, 40, 41 |
+## Installation
 
-## 📋 Requirements
-
-- Root or sudo access
-- Internet connection
-- **Minimum 512 MB RAM**
-- **Minimum 2 GB disk space**
-
-## ⚡ Quick Start
-
-### One-Line Install (Recommended)
+Télécharger et inspecter le script avant de l'exécuter :
 
 ```bash
-curl -sL https://raw.githubusercontent.com/Kofysh/GLPI-Auto-Install/main/glpi-installer.sh | sudo bash
+curl -fL https://raw.githubusercontent.com/Kofysh/GLPI-Auto-Install/main/glpi-installer.sh -o glpi-installer.sh
+bash -n glpi-installer.sh
+sudo bash glpi-installer.sh --dry-run
+sudo bash glpi-installer.sh
 ```
 
-### Download and Run
+> Pour tester cette refonte avant son intégration à `main`, utiliser le fichier de la branche `feat/multi-distro-production-installer` à la place du lien ci-dessus.
+
+Mode non interactif :
 
 ```bash
-# Download
-curl -O https://raw.githubusercontent.com/Kofysh/GLPI-Auto-Install/main/glpi-installer.sh
-
-# Make executable
-chmod +x glpi-installer.sh
-
-# Run
-sudo ./glpi-installer.sh
+sudo bash glpi-installer.sh --yes --domain glpi.example.org
 ```
 
-### Using wget
+Avec HTTPS / Let's Encrypt :
 
 ```bash
-wget https://raw.githubusercontent.com/Kofysh/GLPI-Auto-Install/main/glpi-installer.sh
-chmod +x glpi-installer.sh
-sudo ./glpi-installer.sh
+sudo bash glpi-installer.sh --yes \
+  --domain glpi.example.org --enable-ssl --ssl-email admin@example.org
 ```
 
-### Clone Repository
+Pour fournir un mot de passe de base de données sans l'écrire dans les arguments du processus :
 
 ```bash
-git clone https://github.com/Kofysh/GLPI-Auto-Install.git
-cd GLPI-Auto-Install
-sudo ./glpi-installer.sh
+sudo GLPI_DB_PASSWORD='un-mot-de-passe-de-12-caracteres-minimum' \
+  bash glpi-installer.sh --yes
 ```
 
-## 📖 Usage
+Sans variable de configuration, un mot de passe aléatoire est généré. Le fichier `/root/.glpi_credentials` est créé avec les droits `0600` et contient les informations nécessaires à l'assistant Web. **Le mot de passe n'est pas affiché dans les logs.**
 
-### Interactive Installation (Recommended)
-
-```bash
-sudo ./glpi-installer.sh
-```
-
-The script will guide you through the steps with confirmations.
-
-### Automatic Installation
-
-```bash
-sudo ./glpi-installer.sh -y
-```
-
-Ideal for automated deployments and scripts.
-
-### Dry-Run Mode
-
-```bash
-sudo ./glpi-installer.sh -d
-```
-
-Shows what would be done without making any changes.
-
-### Custom Installation
-
-```bash
-sudo ./glpi-installer.sh \
-  --db-name my_glpi_db \
-  --db-user my_user \
-  --db-pass MySecurePassword123! \
-  --timezone America/New_York \
-  --domain glpi.mycompany.com
-```
-
-### Piped with Options
-
-```bash
-curl -sL https://raw.githubusercontent.com/Kofysh/GLPI-Auto-Install/main/glpi-installer.sh | sudo bash -s -- --timezone Europe/London
-```
-
-## 🎛️ Options
+### Options
 
 | Option | Description |
-|--------|-------------|
-| `-h, --help` | Display help message |
-| `-v, --verbose` | Verbose mode (more details) |
-| `-y, --yes` | Automatic mode (answer yes to all) |
-| `-f, --force` | Force installation on unsupported OS |
-| `-d, --dry-run` | Simulation without changes |
-| `--skip-checks` | Skip requirements verification |
-| `--db-name NAME` | Database name (default: glpi_db) |
-| `--db-user USER` | Database user (default: glpi_user) |
-| `--db-pass PASS` | Database password (auto-generated if omitted) |
-| `--timezone TZ` | Timezone (default: Europe/Paris) |
-| `--domain DOMAIN` | Server domain name |
-| `--version` | Display script version |
-| `--uninstall` | Completely uninstall GLPI |
-| `--keep-db` | Keep database when uninstalling |
-| `--keep-packages` | Keep Apache/MariaDB/PHP when uninstalling |
+| --- | --- |
+| `-y`, `--yes` | Confirme l'installation non interactive |
+| `-d`, `--dry-run` | Vérifie le type d'OS et décrit le déploiement sans modifier l'hôte |
+| `--glpi-version X.Y.Z` | Installe une archive officielle 10.x ou 11.x spécifique |
+| `--db-name`, `--db-user` | Personnalise la base et son compte dédié |
+| `--db-pass` | Mot de passe explicite (déconseillé : visible dans la liste des processus) |
+| `--timezone` | Fuseau horaire PHP (défaut `Europe/Paris`) |
+| `--domain` | Nom d'hôte Apache |
+| `--enable-ssl`, `--ssl-email` | Certificat Let's Encrypt (prise en charge automatique sur Debian/RHEL) |
+| `--help`, `--version` | Aide et numéro de version |
 
-## 🗑️ Uninstallation
+Les anciennes options `--uninstall`, `--force`, `--skip-checks`, `--no-rollback`, `--keep-db`, `--keep-packages` ont été retirées pour éviter des actions accidentellement destructives sur un serveur de production.
 
-### Full Uninstall (Interactive)
+## Après l'installation
 
-```bash
-sudo ./glpi-installer.sh --uninstall
-```
+1. Ouvrir le site GLPI, compléter l'assistant de connexion et d'initialisation de la base.
+2. Modifier immédiatement les mots de passe des comptes créés par GLPI (notamment `glpi`, `tech`, `normal` et `post-only` lorsqu'ils existent).
+3. Sécuriser l'accès via HTTPS, un filtrage réseau et des sauvegardes régulières (base + répertoires de données/configuration).
+4. Retirer ou désactiver l'assistant d'installation lorsque GLPI indique que cette étape est nécessaire.
+5. Vérifier les actions automatiques, les droits d'écriture et les journaux Apache/PHP-FPM/GLPI.
 
-### Full Uninstall (No Prompts)
+### Emplacements
 
-```bash
-sudo ./glpi-installer.sh --uninstall -y
-```
+| Répertoire | Contenu |
+| --- | --- |
+| `/var/www/glpi` | Code de GLPI, servi uniquement depuis `public/` |
+| `/etc/glpi` | Configuration de GLPI |
+| `/var/lib/glpi` | Données, fichiers téléversés et marketplace |
+| `/var/log/glpi` | Journaux de l'application |
+| `/root/.glpi_credentials` | Accès à la nouvelle base, visible uniquement par root |
+| `/var/log/glpi-installer` | Journaux de l'installateur (sans mot de passe) |
 
-### Uninstall but Keep Database
+## Limites et reprise d'erreur
 
-```bash
-sudo ./glpi-installer.sh --uninstall --keep-db
-```
+- L'installateur **ne modifie ni ne supprime** une ancienne instance GLPI, sa base ou son compte SQL.
+- En cas d'échec après la création de la nouvelle base, celle-ci est conservée. L'administrateur doit examiner l'état de la machine et terminer ou nettoyer manuellement avant une nouvelle tentative.
+- Il n'effectue pas de migration de GLPI 10 vers 11, d'upgrade SQL ou de sauvegarde/restauration automatique.
+- Les règles du pare-feu et le reverse proxy ne sont pas modifiés.
+- L'intégration Apache avec SELinux enforcing, les chemins PHP-FPM SUSE/Alpine et les modules fournis par chaque dépôt demandent des tests réels sur les distributions concernées.
+- Le mode `--dry-run` ne vérifie ni la disponibilité des paquets ni les droits effectifs des services : il ne remplace pas un test sur VM/LXC.
 
-### Uninstall but Keep LAMP Stack
+La documentation officielle fait foi pour les prérequis : [prérequis GLPI](https://glpi-install.readthedocs.io/en/latest/prerequisites.html) et [installation](https://glpi-install.readthedocs.io/en/latest/install/).
 
-```bash
-sudo ./glpi-installer.sh --uninstall --keep-packages
-```
+## Contribution
 
-### Uninstall via curl
-
-```bash
-curl -sL https://raw.githubusercontent.com/Kofysh/GLPI-Auto-Install/main/glpi-installer.sh | sudo bash -s -- --uninstall -y
-```
-
-## 📂 File Structure
-
-After installation, files are organized following security best practices:
-
-```
-/var/www/glpi/           # GLPI application (source code)
-/var/lib/glpi/           # Data (files, marketplace)
-/var/log/glpi/           # GLPI logs
-/etc/glpi/               # Configuration
-/var/log/glpi-installer/ # Installation logs
-/root/.glpi_credentials  # Credentials (chmod 600)
-```
-
-## 🔐 Post-Installation
-
-### 1. Access GLPI
-
-Open your browser and navigate to:
-```
-http://YOUR_SERVER_IP/
-```
-
-### 2. Complete Setup Wizard
-
-Follow the web wizard and enter the database information displayed at the end of the script.
-
-### 3. Default Accounts
-
-| Account | Username | Password | Role |
-|---------|----------|----------|------|
-| Super-Admin | `glpi` | `glpi` | Full administrator |
-| Admin | `tech` | `tech` | Technician |
-| Normal | `normal` | `normal` | Standard user |
-| Post-only | `post-only` | `post-only` | Ticket creation only |
-
-> ⚠️ **IMPORTANT**: Change all default passwords immediately!
-
-### 4. Post-Installation Security
-
-```bash
-# Remove installation script
-sudo rm /var/www/glpi/install/install.php
-
-# Verify permissions
-sudo ls -la /var/lib/glpi/
-sudo ls -la /etc/glpi/
-```
-
-### 5. HTTPS Configuration (Recommended for Production)
-
-```bash
-# Debian/Ubuntu with Certbot
-sudo apt install certbot python3-certbot-apache
-sudo certbot --apache -d glpi.yourdomain.com
-
-# RHEL/CentOS/Rocky/Fedora
-sudo dnf install certbot python3-certbot-apache
-sudo certbot --apache -d glpi.yourdomain.com
-```
-
-## 📊 What Gets Installed
-
-- **Apache** (web server)
-- **MariaDB** (database)
-- **PHP** + required extensions (mysql, ldap, imap, curl, gd, mbstring, xml, intl, zip, bz2, opcache)
-- **GLPI** (latest stable version)
-- **Cron job** for automatic actions
-
-## 🐛 Troubleshooting
-
-### View Installation Logs
-
-```bash
-ls -la /var/log/glpi-installer/
-cat /var/log/glpi-installer/install_*.log
-```
-
-### Check Services
-
-```bash
-# Debian/Ubuntu
-sudo systemctl status apache2 mariadb
-
-# RHEL/CentOS/Rocky/Fedora
-sudo systemctl status httpd mariadb
-```
-
-### Test Database Connection
-
-```bash
-# Credentials are stored in:
-sudo cat /root/.glpi_credentials
-
-# Test connection
-mysql -u glpi_user -p glpi_db
-```
-
-### Check Permissions
-
-```bash
-ls -la /var/www/glpi/
-ls -la /var/lib/glpi/
-ls -la /etc/glpi/
-```
-
-### Common Issues
-
-| Issue | Solution |
-|-------|----------|
-| "Permission denied" | Run with `sudo` |
-| "No network connectivity" | Check internet connection |
-| Database connection failed | Verify credentials in `/root/.glpi_credentials` |
-| Apache won't start | Check logs: `journalctl -xeu apache2` or `httpd` |
-| SELinux blocking access | Script configures SELinux automatically, check `audit.log` |
-
-## 🤝 Contributing
-
-Contributions are welcome! Feel free to:
-
-1. Fork the project
-2. Create a branch (`git checkout -b feature/improvement`)
-3. Commit your changes (`git commit -am 'Add new feature'`)
-4. Push to the branch (`git push origin feature/improvement`)
-5. Open a Pull Request
-
-## 📄 License
-
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
-
-## 🙏 Acknowledgments
-
-- [GLPI Project](https://glpi-project.org/) for this excellent IT asset management tool
-- The open source community
-
----
-
-<p align="center">
-  <sub>⭐ If this project helped you, please consider giving it a star!</sub>
-</p>
+Les correctifs sont bienvenus. Vérifiez au minimum `bash -n glpi-installer.sh`, ShellCheck et un déploiement complet en VM/LXC **jetable** avant toute mise en production. Le dépôt est distribué sous licence MIT.

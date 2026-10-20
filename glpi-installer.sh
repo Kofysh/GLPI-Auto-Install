@@ -1,1265 +1,562 @@
 #!/usr/bin/env bash
+# GLPI Auto-Install - maintained by Kofysh
+# https://github.com/Kofysh/GLPI-Auto-Install
+set -Eeuo pipefail
+umask 027
 
-#===============================================================================
-#
-#   GLPI Auto-Installer v4.1
-#   Optimized for Debian 10/11/12/13 and Ubuntu 20.04/22.04/24.04
-#
-#   Author: Kofysh
-#   GitHub: https://github.com/Kofysh/GLPI-Auto-Install
-#
-#   Changelog v4.1:
-#   - Enhanced password generation with special characters
-#   - SSL/HTTPS support with Let's Encrypt
-#   - Automatic rollback on failure
-#   - Post-installation validation
-#   - MariaDB performance tuning
-#   - PHP opcache optimization
-#   - Input validation and sanitization
-#   - Progress indicators
-#   - Container detection
-#   - Specific version installation support
-#
-#===============================================================================
+VERSION=5.0.0
+INSTALL_DIR=/var/www/glpi
+DATA_DIR=/var/lib/glpi
+CONFIG_DIR=/etc/glpi
+GLPI_LOG_DIR=/var/log/glpi
+CREDENTIALS=/root/.glpi_credentials
+LOG_DIR=/var/log/glpi-installer
+DRY_RUN=false
+YES=false
+SSL=false
+SSL_EMAIL=
+DOMAIN=
+GLPI_VERSION=
+DB_NAME=glpi_db
+DB_USER=glpi_user
+DB_PASS=${GLPI_DB_PASSWORD:-}
+TIMEZONE=Europe/Paris
+OS_FAMILY=
+OS_ID=
+OS_VERSION=
+VIRT=physical
+WEB_USER=
+WEB_GROUP=
+WEB_SERVICE=
+DB_SERVICE=mariadb
+FPM_SERVICE=
+FPM_POOL_DIR=
+FPM_SOCKET=/run/glpi-fpm.sock
+APACHE_CONF=
+PHP_BIN=php
+PKG_MANAGER=
+LOG_FILE=
+TMP_DIR=
 
-set -Eeo pipefail
-
-#-------------------------------------------------------------------------------
-# VARIABLES
-#-------------------------------------------------------------------------------
-
-SCRIPT_NAME="${BASH_SOURCE[0]:-glpi-installer.sh}"
-readonly SCRIPT_NAME
-readonly SCRIPT_NAME_BASE="$(basename "${SCRIPT_NAME}")"
-readonly SCRIPT_VERSION="4.1.0"
-readonly SCRIPT_PID=$$
-readonly START_TIME=$(date +%s)
-
-readonly LOG_DIR="/var/log/glpi-installer"
-readonly LOG_FILE="${LOG_DIR}/install_$(date +%Y%m%d_%H%M%S).log"
-readonly LOCK_FILE="/var/run/glpi-installer.lock"
-readonly BACKUP_DIR="/var/backups/glpi-installer"
-
-readonly GLPI_INSTALL_DIR="/var/www/glpi"
-readonly GLPI_VAR_DIR="/var/lib/glpi"
-readonly GLPI_LOG_DIR="/var/log/glpi"
-readonly GLPI_CONFIG_DIR="/etc/glpi"
-
-readonly MIN_MEMORY_MB=512
-readonly MIN_DISK_GB=2
-
-declare -A CONFIG=(
-    [GLPI_VERSION]=""
-    [GLPI_DOWNLOAD_URL]=""
-    [DB_NAME]="glpi_db"
-    [DB_USER]="glpi_user"
-    [DB_PASS]=""
-    [DB_HOST]="localhost"
-    [TIMEZONE]="Europe/Paris"
-    [INSTALL_DIR]="${GLPI_INSTALL_DIR}"
-    [DOMAIN]=""
-    [ENABLE_SSL]="false"
-    [SSL_EMAIL]=""
-)
-
-declare -A SYSTEM=(
-    [OS_NAME]=""
-    [OS_VERSION]=""
-    [OS_PRETTY_NAME]=""
-    [PHP_VERSION]=""
-    [TOTAL_MEMORY_MB]=0
-    [AVAILABLE_DISK_GB]=0
-    [IP_ADDRESS]=""
-    [IS_CONTAINER]="false"
-)
-
-declare VERBOSE=false
-declare DRY_RUN=false
-declare FORCE=false
-declare UNATTENDED=false
-declare UNINSTALL_MODE=false
-declare KEEP_DATABASE=false
-declare KEEP_PACKAGES=false
-declare ROLLBACK_ENABLED=true
-declare INSTALLATION_FAILED=false
-
-# Colors
-readonly C_RESET='\033[0m'
-readonly C_BOLD='\033[1m'
-readonly C_DIM='\033[2m'
-readonly C_RED='\033[0;31m'
-readonly C_GREEN='\033[0;32m'
-readonly C_YELLOW='\033[0;33m'
-readonly C_BLUE='\033[0;34m'
-readonly C_CYAN='\033[0;36m'
-readonly C_BG_RED='\033[41m'
-readonly C_MAGENTA='\033[0;35m'
-
-#-------------------------------------------------------------------------------
-# LOGGING FUNCTIONS
-#-------------------------------------------------------------------------------
-
-init_logging() {
-    mkdir -p "${LOG_DIR}" "${BACKUP_DIR}" 2>/dev/null || true
-    touch "${LOG_FILE}" 2>/dev/null || true
-    chmod 640 "${LOG_FILE}" 2>/dev/null || true
+say() {
+    printf '[%s] %s\n' "$1" "$2"
+    [[ -z "$LOG_FILE" ]] || printf '[%s] %s\n' "$1" "$2" >> "$LOG_FILE"
 }
-
-log() {
-    local level="$1"
-    shift
-    local message="$*"
-    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-    local color=""
-    local prefix=""
-    
-    case "${level}" in
-        DEBUG)   color="${C_DIM}";    prefix="[DEBUG]" ;;
-        INFO)    color="${C_BLUE}";   prefix="[INFO] " ;;
-        SUCCESS) color="${C_GREEN}";  prefix="[OK]   " ;;
-        WARN)    color="${C_YELLOW}"; prefix="[WARN] " ;;
-        ERROR)   color="${C_RED}";    prefix="[ERROR]" ;;
-        FATAL)   color="${C_BG_RED}"; prefix="[FATAL]" ;;
-    esac
-    
-    [[ "${level}" == "DEBUG" && "${VERBOSE}" != "true" ]] && return
-    
-    echo -e "${color}${prefix}${C_RESET} ${message}"
-    echo "[${timestamp}] ${prefix} ${message}" >> "${LOG_FILE}" 2>/dev/null || true
-}
-
-debug()   { log DEBUG "$@"; }
-info()    { log INFO "$@"; }
-success() { log SUCCESS "$@"; }
-warn()    { log WARN "$@"; }
-error()   { log ERROR "$@"; }
-
-fatal() {
-    log FATAL "$@"
-    INSTALLATION_FAILED=true
-    rm -f "${LOCK_FILE}" 2>/dev/null || true
-    exit 1
-}
-
-#-------------------------------------------------------------------------------
-# UI FUNCTIONS
-#-------------------------------------------------------------------------------
-
-print_banner() {
-    echo -e "${C_CYAN}"
-    cat << 'BANNER'
-
-   ██████╗ ██╗     ██████╗ ██╗    ██╗███╗   ██╗███████╗████████╗ █████╗ ██╗     ██╗     ███████╗██████╗ 
-  ██╔════╝ ██║     ██╔══██╗██║    ██║████╗  ██║██╔════╝╚══██╔══╝██╔══██╗██║     ██║     ██╔════╝██╔══██╗
-  ██║  ███╗██║     ██████╔╝██║    ██║██╔██╗ ██║███████╗   ██║   ███████║██║     ██║     █████╗  ██████╔╝
-  ██║   ██║██║     ██╔═══╝ ██║    ██║██║╚██╗██║╚════██║   ██║   ██╔══██║██║     ██║     ██╔══╝  ██╔══██╗
-  ╚██████╔╝███████╗██║     ██║    ██║██║ ╚████║███████║   ██║   ██║  ██║███████╗███████╗███████╗██║  ██║
-   ╚═════╝ ╚══════╝╚═╝     ╚═╝    ╚═╝╚═╝  ╚═══╝╚══════╝   ╚═╝   ╚═╝  ╚═╝╚══════╝╚══════╝╚══════╝╚═╝  ╚═╝
-
-                                 Auto-Installer v4.1 | By Kofysh
-
-BANNER
-    echo -e "${C_RESET}"
-}
-
-print_step() {
-    local step_num="$1"
-    local total="$2"
-    local title="$3"
-    local width=70
-    local line=$(printf '═%.0s' $(seq 1 $width))
-    
-    echo ""
-    echo -e "${C_CYAN}╔${line}╗${C_RESET}"
-    printf "${C_CYAN}║${C_RESET} ${C_BOLD}[%02d/%02d]${C_RESET} %-$((width-10))s ${C_CYAN}║${C_RESET}\n" "${step_num}" "${total}" "${title}"
-    echo -e "${C_CYAN}╚${line}╝${C_RESET}"
-    echo ""
-}
-
-show_progress() {
-    local current=$1
-    local total=$2
-    local percent=$((current * 100 / total))
-    local filled=$((percent / 2))
-    
-    printf "\r  ${C_CYAN}[%-50s]${C_RESET} %d%%" $(printf "█%.0s" $(seq 1 $filled)) "$percent"
-    [[ $current -eq $total ]] && echo ""
-}
-
-confirm() {
-    local message="${1:-Continue?}"
-    local default="${2:-n}"
-    
-    [[ "${UNATTENDED}" == "true" ]] && { [[ "${default}" =~ ^[Yy]$ ]] && return 0 || return 1; }
-    [[ ! -t 0 ]] && { [[ "${default}" =~ ^[Yy]$ ]] && return 0 || return 1; }
-    
-    local prompt
-    [[ "${default}" =~ ^[Yy]$ ]] && prompt="[Y/n]" || prompt="[y/N]"
-    
-    while true; do
-        read -rp "  ${C_YELLOW}?${C_RESET} ${message} ${prompt}: " answer </dev/tty 2>/dev/null || answer="${default}"
-        answer="${answer:-$default}"
-        case "${answer}" in
-            [Yy]*) return 0 ;;
-            [Nn]*) return 1 ;;
-            *) echo "  Please answer yes or no." ;;
-        esac
-    done
-}
-
-#-------------------------------------------------------------------------------
-# VALIDATION FUNCTIONS
-#-------------------------------------------------------------------------------
-
-validate_input() {
-    local input_type="$1"
-    local input_value="$2"
-    
-    case "${input_type}" in
-        db_name|db_user)
-            if [[ ! "${input_value}" =~ ^[a-zA-Z0-9_]+$ ]]; then
-                fatal "Invalid ${input_type}: only alphanumeric and underscore allowed"
-            fi
-            ;;
-        domain)
-            if [[ -n "${input_value}" ]] && [[ ! "${input_value}" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$ ]]; then
-                fatal "Invalid domain name format"
-            fi
-            ;;
-        email)
-            if [[ -n "${input_value}" ]] && [[ ! "${input_value}" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; then
-                fatal "Invalid email address format"
-            fi
-            ;;
-        version)
-            if [[ -n "${input_value}" ]] && [[ ! "${input_value}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-                fatal "Invalid version format (expected: X.Y.Z)"
-            fi
-            ;;
-    esac
-}
-
-#-------------------------------------------------------------------------------
-# SYSTEM FUNCTIONS
-#-------------------------------------------------------------------------------
-
-check_root() {
-    if [[ ${EUID} -ne 0 ]]; then
-        fatal "This script must be run as root. Use: sudo ${SCRIPT_NAME_BASE}"
-    fi
-}
-
-acquire_lock() {
-    if [[ -f "${LOCK_FILE}" ]]; then
-        local old_pid=$(cat "${LOCK_FILE}" 2>/dev/null || echo "")
-        if [[ -n "${old_pid}" ]] && kill -0 "${old_pid}" 2>/dev/null; then
-            fatal "Another installation is already running (PID: ${old_pid})"
-        fi
-        rm -f "${LOCK_FILE}" 2>/dev/null || true
-    fi
-    echo "${SCRIPT_PID}" > "${LOCK_FILE}"
-}
-
-release_lock() {
-    rm -f "${LOCK_FILE}" 2>/dev/null || true
-}
-
-rollback_installation() {
-    if [[ "${ROLLBACK_ENABLED}" != "true" || "${INSTALLATION_FAILED}" != "true" ]]; then
-        return 0
-    fi
-    
-    warn "Installation failed - initiating rollback..."
-    
-    # Restore previous GLPI installation
-    if [[ -d "${BACKUP_DIR}"/glpi_backup_* ]]; then
-        local latest_backup=$(ls -td "${BACKUP_DIR}"/glpi_backup_* 2>/dev/null | head -1)
-        if [[ -n "${latest_backup}" ]]; then
-            info "Restoring previous installation from ${latest_backup}"
-            rm -rf "${CONFIG[INSTALL_DIR]}" 2>/dev/null || true
-            mv "${latest_backup}" "${CONFIG[INSTALL_DIR]}" 2>/dev/null || true
-            success "Previous installation restored"
-        fi
-    fi
-    
-    # Remove incomplete files
-    if [[ ! -d "${BACKUP_DIR}"/glpi_backup_* ]]; then
-        info "Removing incomplete installation files"
-        rm -rf "${CONFIG[INSTALL_DIR]}" 2>/dev/null || true
-        rm -rf "${GLPI_VAR_DIR}" 2>/dev/null || true
-        rm -rf "${GLPI_CONFIG_DIR}" 2>/dev/null || true
-    fi
-    
-    # Remove database if created during this installation
-    if [[ -n "${CONFIG[DB_NAME]}" ]]; then
-        mysql -e "DROP DATABASE IF EXISTS \`${CONFIG[DB_NAME]}\`;" 2>/dev/null || true
-        mysql -e "DROP USER IF EXISTS '${CONFIG[DB_USER]}'@'localhost';" 2>/dev/null || true
-        mysql -e "FLUSH PRIVILEGES;" 2>/dev/null || true
-    fi
-    
-    warn "Rollback completed"
-}
-
+info() { say INFO "$*"; }
+warn() { say WARN "$*" >&2; }
+die() { say ERROR "$*" >&2; exit 1; }
 cleanup() {
-    local exit_code=$?
-    
-    if [[ ${exit_code} -ne 0 ]]; then
-        INSTALLATION_FAILED=true
-        rollback_installation
-        error "Installation failed. Check log: ${LOG_FILE}"
+    local status=$?
+    [[ -z "$TMP_DIR" ]] || rm -rf -- "$TMP_DIR"
+    if ((status != 0)); then
+        warn "Installation interrupted. Existing GLPI databases and installations were not removed."
+        [[ -z "$LOG_FILE" ]] || warn "See $LOG_FILE for diagnostics (secrets are never logged)."
     fi
-    
-    release_lock
-    
-    local duration=$(($(date +%s) - START_TIME))
-    info "Total execution time: $((duration / 60))m $((duration % 60))s"
 }
-
 trap cleanup EXIT
 
-detect_container() {
-    if [[ -f /.dockerenv ]] || grep -q docker /proc/1/cgroup 2>/dev/null; then
-        SYSTEM[IS_CONTAINER]="true"
-        warn "Container environment detected - some features may be limited"
-        return 0
-    fi
-    return 1
+help() {
+    cat <<EOF
+GLPI Auto-Install $VERSION - fresh Linux server deployments
+Usage: sudo bash glpi-installer.sh [options]
+  -y, --yes                 Non-interactive installation
+  -d, --dry-run             Detect platform and show planned actions (no writes)
+  --glpi-version X.Y.Z      Pin an official GLPI release
+  --db-name NAME            Database name (default: glpi_db)
+  --db-user USER            Database user (default: glpi_user)
+  --db-pass PASSWORD        DB password (prefer GLPI_DB_PASSWORD environment variable)
+  --timezone ZONE           PHP timezone (default: Europe/Paris)
+  --domain NAME             FQDN for Apache virtual host
+  --enable-ssl              Request Let's Encrypt TLS (requires --domain)
+  --ssl-email ADDRESS       Let's Encrypt account email
+  -h, --help                Show help
+  --version                 Show installer version
+
+This installer never upgrades, replaces, or uninstalls existing GLPI instances.
+The target must be a dedicated machine, VM, or LXC with a working init system.
+EOF
 }
 
-check_network() {
-    info "Checking network connectivity..."
-    
-    local test_urls=("https://github.com" "https://api.github.com" "8.8.8.8")
-    
-    for url in "${test_urls[@]}"; do
-        if [[ "${url}" == "8.8.8.8" ]]; then
-            if ping -c 1 -W 5 "${url}" </dev/null &>/dev/null; then
-                success "Network connectivity verified"
-                return 0
-            fi
-        else
-            if curl -s --connect-timeout 10 -o /dev/null "${url}" </dev/null 2>/dev/null; then
-                success "Network connectivity verified"
-                return 0
-            fi
-        fi
-    done
-    
-    fatal "No network connectivity. Please check your internet connection."
-}
+while (($#)); do
+    case "$1" in
+        -h|--help) help; exit 0 ;;
+        --version) printf '%s\n' "$VERSION"; exit 0 ;;
+        -d|--dry-run) DRY_RUN=true; shift ;;
+        -y|--yes) YES=true; shift ;;
+        --enable-ssl) SSL=true; shift ;;
+        --glpi-version|--db-name|--db-user|--db-pass|--timezone|--domain|--ssl-email)
+            (($# >= 2)) || die "Missing value for $1"
+            case "$1" in
+                --glpi-version) GLPI_VERSION=$2 ;;
+                --db-name) DB_NAME=$2 ;;
+                --db-user) DB_USER=$2 ;;
+                --db-pass) DB_PASS=$2 ;;
+                --timezone) TIMEZONE=$2 ;;
+                --domain) DOMAIN=$2 ;;
+                --ssl-email) SSL_EMAIL=$2 ;;
+            esac
+            shift 2 ;;
+        --force|--skip-checks|--no-rollback|--uninstall|--keep-db|--keep-packages)
+            die "The legacy option $1 is not supported: unsafe overrides/uninstall were removed. See --help." ;;
+        *) die "Unknown argument: $1" ;;
+    esac
+done
 
-detect_system() {
-    print_step 1 12 "System Detection"
-    
-    detect_container
-    
-    if [[ ! -f /etc/os-release ]]; then
-        fatal "Cannot detect OS: /etc/os-release not found"
-    fi
-    
-    source /etc/os-release
-    
-    SYSTEM[OS_NAME]="${ID}"
-    SYSTEM[OS_VERSION]="${VERSION_ID}"
-    SYSTEM[OS_PRETTY_NAME]="${PRETTY_NAME}"
-    
-    if [[ "${ID}" != "debian" && "${ID}" != "ubuntu" ]]; then
-        fatal "This script only supports Debian and Ubuntu. Detected: ${ID}"
-    fi
-    
-    case "${ID}" in
+[[ "$DB_NAME" =~ ^[a-zA-Z][a-zA-Z0-9_]{0,63}$ ]] || die 'Invalid database name'
+[[ "$DB_USER" =~ ^[a-zA-Z][a-zA-Z0-9_]{0,31}$ ]] || die 'Invalid database username'
+[[ -z "$DB_PASS" || "$DB_PASS" =~ ^[a-zA-Z0-9._~!@#%+=:-]{12,128}$ ]] || die 'Invalid DB password (12-128 characters; avoid SQL quote and shell-sensitive characters)'
+[[ -z "$GLPI_VERSION" || "$GLPI_VERSION" =~ ^(10|11)\.[0-9]+\.[0-9]+$ ]] || die 'Expected GLPI version 10.x.y or 11.x.y'
+[[ "$TIMEZONE" =~ ^[A-Za-z_]+(/[A-Za-z0-9_+-]+)*$ ]] || die 'Invalid timezone'
+[[ -z "$DOMAIN" || "$DOMAIN" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] || die 'Invalid domain'
+[[ -z "$SSL_EMAIL" || "$SSL_EMAIL" =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]] || die 'Invalid SSL email'
+if "$SSL"; then
+    [[ -n "$DOMAIN" && -n "$SSL_EMAIL" ]] || die 'SSL requires --domain and --ssl-email'
+fi
+
+version_at_least() { [[ "$(printf '%s\n' "$1" "$2" | sort -V | head -n 1)" == "$2" ]]; }
+
+platform() {
+    [[ -r /etc/os-release ]] || die 'Cannot read /etc/os-release'
+    # OS identification uses distro metadata, not guessed release files.
+    . /etc/os-release
+    OS_ID=${ID,,}
+    OS_VERSION=${VERSION_ID:-unknown}
+    local ancestor=" ${ID_LIKE:-} "
+    case "$OS_ID" in
+        debian|ubuntu) OS_FAMILY=debian ;;
+        rhel|rocky|almalinux|ol|centos|fedora) OS_FAMILY=rhel ;;
+        opensuse-leap|opensuse-tumbleweed|sles|sled) OS_FAMILY=suse ;;
+        alpine) OS_FAMILY=alpine ;;
+        *)
+            case "$ancestor" in
+                *debian*) OS_FAMILY=debian ;;
+                *rhel*|*fedora*) OS_FAMILY=rhel ;;
+                *suse*) OS_FAMILY=suse ;;
+                *) die "Unsupported distribution: $OS_ID. Supported families: Debian, RHEL, SUSE, Alpine." ;;
+            esac ;;
+    esac
+    case "$OS_FAMILY" in
         debian)
-            case "${VERSION_ID}" in
-                10) SYSTEM[PHP_VERSION]="7.3" ;;
-                11) SYSTEM[PHP_VERSION]="7.4" ;;
-                12) SYSTEM[PHP_VERSION]="8.2" ;;
-                13) SYSTEM[PHP_VERSION]="8.4" ;;
-                *)  SYSTEM[PHP_VERSION]="8.2" ;;
-            esac
+            PKG_MANAGER=apt-get; WEB_USER=www-data; WEB_GROUP=www-data
+            WEB_SERVICE=apache2; APACHE_CONF=/etc/apache2/sites-available/000-0-glpi.conf
             ;;
-        ubuntu)
-            case "${VERSION_ID}" in
-                20.04) SYSTEM[PHP_VERSION]="7.4" ;;
-                22.04) SYSTEM[PHP_VERSION]="8.1" ;;
-                24.04) SYSTEM[PHP_VERSION]="8.3" ;;
-                *)     SYSTEM[PHP_VERSION]="8.1" ;;
-            esac
+        rhel)
+            PKG_MANAGER=dnf; WEB_USER=apache; WEB_GROUP=apache
+            WEB_SERVICE=httpd; APACHE_CONF=/etc/httpd/conf.d/00-glpi.conf
+            ;;
+        suse)
+            PKG_MANAGER=zypper; WEB_USER=wwwrun; WEB_GROUP=www
+            WEB_SERVICE=apache2; APACHE_CONF=/etc/apache2/vhosts.d/00-glpi.conf
+            ;;
+        alpine)
+            PKG_MANAGER=apk; WEB_USER=apache; WEB_GROUP=apache
+            WEB_SERVICE=apache2; APACHE_CONF=/etc/apache2/conf.d/00-glpi.conf
             ;;
     esac
-    
-    SYSTEM[TOTAL_MEMORY_MB]=$(free -m | awk '/^Mem:/{print $2}')
-    SYSTEM[AVAILABLE_DISK_GB]=$(df -BG / | awk 'NR==2{print int($4)}')
-    SYSTEM[IP_ADDRESS]=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "127.0.0.1")
-    
-    success "Detected: ${SYSTEM[OS_PRETTY_NAME]}"
-    info "  ├─ PHP Version: ${SYSTEM[PHP_VERSION]}"
-    info "  ├─ Memory: ${SYSTEM[TOTAL_MEMORY_MB]} MB"
-    info "  ├─ Available Disk: ${SYSTEM[AVAILABLE_DISK_GB]} GB"
-    info "  ├─ IP Address: ${SYSTEM[IP_ADDRESS]}"
-    info "  └─ Container: ${SYSTEM[IS_CONTAINER]}"
+    if command -v systemd-detect-virt >/dev/null 2>&1; then
+        VIRT=$(systemd-detect-virt 2>/dev/null || printf physical)
+    elif [[ -r /run/systemd/container ]]; then
+        VIRT=$(cat /run/systemd/container)
+    elif [[ -e /.dockerenv ]]; then
+        VIRT=docker
+    elif [[ -r /proc/1/environ ]] && tr '\0' '\n' </proc/1/environ | grep -q '^container=lxc$'; then
+        VIRT=lxc
+    fi
+    info "System: $OS_ID $OS_VERSION | family: $OS_FAMILY | virtualization: $VIRT"
+    [[ "$VIRT" != docker && "$VIRT" != podman ]] || die 'OCI containers are not supported: use a dedicated GLPI container image instead.'
 }
 
-check_requirements() {
-    print_step 2 12 "Requirements Check"
-    
-    local errors=0
-    
-    info "Checking memory..."
-    if [[ ${SYSTEM[TOTAL_MEMORY_MB]} -lt ${MIN_MEMORY_MB} ]]; then
-        error "Insufficient memory: ${SYSTEM[TOTAL_MEMORY_MB]}MB < ${MIN_MEMORY_MB}MB required"
-        errors=$((errors + 1))
+packages() {
+    local -a items=()
+    case "$OS_FAMILY" in
+        debian)
+            export DEBIAN_FRONTEND=noninteractive
+            "$PKG_MANAGER" update -qq
+            items=(apache2 mariadb-server mariadb-client php-cli php-fpm php-mysql php-gd
+                   php-curl php-mbstring php-xml php-intl php-bcmath php-zip php-ldap
+                   php-opcache ca-certificates curl tar openssl cron)
+            "$PKG_MANAGER" install -y "${items[@]}" ;;
+        rhel)
+            # RHEL 9 and its clones default to PHP 8.0; use the vendor's PHP 8.2 stream.
+            if [[ "$OS_ID" != fedora && "${OS_VERSION%%.*}" == 9 ]]; then
+                "$PKG_MANAGER" module enable -y php:8.2 || die 'Could not enable the PHP 8.2 AppStream module. Check repositories and existing PHP modules.'
+            fi
+            items=(httpd mariadb-server mariadb php php-cli php-fpm php-mysqlnd php-gd
+                   php-mbstring php-xml php-intl php-bcmath php-opcache php-ldap
+                   ca-certificates curl tar openssl cronie policycoreutils-python-utils)
+            "$PKG_MANAGER" install -y "${items[@]}" ;;
+        suse)
+            items=(apache2 mariadb mariadb-client php8 php8-fpm php8-mysql php8-gd
+                   php8-curl php8-mbstring php8-intl php8-bcmath php8-zip php8-opcache
+                   ca-certificates curl tar openssl cron)
+            "$PKG_MANAGER" --non-interactive install --no-recommends "${items[@]}" ;;
+        alpine)
+            # Alpine PHP packages use a versioned suffix; select the newest available major.
+            local n=""
+            for n in 84 83 82; do apk search -e "php${n}-fpm" 2>/dev/null | grep -q "^php${n}-fpm" && break; done
+            apk search -e "php${n}-fpm" 2>/dev/null | grep -q "^php${n}-fpm" || die 'No supported PHP-FPM package in enabled Alpine repositories'
+            PHP_BIN="php${n}"
+            FPM_SERVICE="php-fpm${n}"
+            FPM_POOL_DIR="/etc/php${n}/php-fpm.d"
+            items=(apache2 mariadb mariadb-client "php${n}" "php${n}-fpm" "php${n}-mysqli"
+                   "php${n}-gd" "php${n}-curl" "php${n}-mbstring" "php${n}-xml"
+                   "php${n}-intl" "php${n}-bcmath" "php${n}-session" "php${n}-fileinfo"
+                   "php${n}-openssl" "php${n}-dom" "php${n}-simplexml"
+                   "php${n}-xmlreader" "php${n}-xmlwriter" "php${n}-tokenizer"
+                   ca-certificates curl tar openssl openrc)
+            apk add --no-cache "${items[@]}" ;;
+    esac
+}
+
+service_action() {
+    local action=$1 name=$2
+    if [[ "$OS_FAMILY" == alpine ]]; then
+        command -v rc-service >/dev/null || die 'OpenRC is not available'
+        if [[ "$action" == enable ]]; then rc-update add "$name" default; else rc-service "$name" "$action"; fi
     else
-        success "Memory: ${SYSTEM[TOTAL_MEMORY_MB]}MB OK"
+        [[ -d /run/systemd/system ]] || die 'systemd is not running. Enable systemd in the LXC/VM before installation.'
+        systemctl "$action" "$name"
     fi
-    
-    info "Checking disk space..."
-    if [[ ${SYSTEM[AVAILABLE_DISK_GB]} -lt ${MIN_DISK_GB} ]]; then
-        error "Insufficient disk: ${SYSTEM[AVAILABLE_DISK_GB]}GB < ${MIN_DISK_GB}GB required"
-        errors=$((errors + 1))
-    else
-        success "Disk space: ${SYSTEM[AVAILABLE_DISK_GB]}GB OK"
-    fi
-    
-    if [[ ${errors} -gt 0 && "${FORCE}" != "true" ]]; then
-        fatal "Requirements check failed with ${errors} error(s). Use --force to override."
-    fi
-    
-    success "All requirements verified"
 }
 
-#-------------------------------------------------------------------------------
-# GLPI FUNCTIONS
-#-------------------------------------------------------------------------------
-
-fetch_latest_version() {
-    print_step 3 12 "Fetching GLPI Version"
-    
-    if [[ -n "${CONFIG[GLPI_VERSION]}" ]]; then
-        info "Using specified version: ${CONFIG[GLPI_VERSION]}"
-        validate_input "version" "${CONFIG[GLPI_VERSION]}"
-        CONFIG[GLPI_DOWNLOAD_URL]="https://github.com/glpi-project/glpi/releases/download/${CONFIG[GLPI_VERSION]}/glpi-${CONFIG[GLPI_VERSION]}.tgz"
-        success "Version configured: ${CONFIG[GLPI_VERSION]}"
-        return 0
-    fi
-    
-    info "Querying GitHub API for latest version..."
-    
-    local api_response
-    local retry=0
-    local max_retries=3
-    
-    while [[ ${retry} -lt ${max_retries} ]]; do
-        api_response=$(curl -sS --connect-timeout 15 --max-time 30 \
-            -H "Accept: application/vnd.github.v3+json" \
-            "https://api.github.com/repos/glpi-project/glpi/releases/latest" </dev/null 2>&1) && break
-        retry=$((retry + 1))
-        warn "API request failed, retrying (${retry}/${max_retries})..."
-        sleep 3
-    done
-    
-    if [[ ${retry} -eq ${max_retries} ]]; then
-        fatal "Failed to fetch GLPI version from GitHub API"
-    fi
-    
-    CONFIG[GLPI_VERSION]=$(echo "${api_response}" | grep -oP '"tag_name":\s*"\K[^"]+' | head -1)
-    
-    if [[ -z "${CONFIG[GLPI_VERSION]}" ]]; then
-        fatal "Could not parse GLPI version from API response"
-    fi
-    
-    CONFIG[GLPI_DOWNLOAD_URL]="https://github.com/glpi-project/glpi/releases/download/${CONFIG[GLPI_VERSION]}/glpi-${CONFIG[GLPI_VERSION]}.tgz"
-    
-    success "Latest version: ${CONFIG[GLPI_VERSION]}"
-}
-
-install_packages() {
-    print_step 4 12 "Installing Packages"
-    
-    info "Updating package repositories..."
-    apt-get update -qq
-    
-    info "Installing Apache, MariaDB, and utilities..."
-    local base_packages=(
-        apache2
-        mariadb-server
-        mariadb-client
-        curl
-        wget
-        tar
-        bzip2
-        unzip
-        cron
-        ca-certificates
-        gnupg
-    )
-    
-    local total=${#base_packages[@]}
-    local current=0
-    
-    for pkg in "${base_packages[@]}"; do
-        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${pkg}" 2>/dev/null || true
-        current=$((current + 1))
-        show_progress ${current} ${total}
-    done
-    
-    info "Installing PHP ${SYSTEM[PHP_VERSION]} and extensions..."
-    
-    local php_packages=(
-        "php${SYSTEM[PHP_VERSION]}"
-        "php${SYSTEM[PHP_VERSION]}-fpm"
-        "php${SYSTEM[PHP_VERSION]}-mysql"
-        "php${SYSTEM[PHP_VERSION]}-ldap"
-        "php${SYSTEM[PHP_VERSION]}-imap"
-        "php${SYSTEM[PHP_VERSION]}-curl"
-        "php${SYSTEM[PHP_VERSION]}-gd"
-        "php${SYSTEM[PHP_VERSION]}-mbstring"
-        "php${SYSTEM[PHP_VERSION]}-xml"
-        "php${SYSTEM[PHP_VERSION]}-intl"
-        "php${SYSTEM[PHP_VERSION]}-zip"
-        "php${SYSTEM[PHP_VERSION]}-bz2"
-        "php${SYSTEM[PHP_VERSION]}-opcache"
-        "php${SYSTEM[PHP_VERSION]}-cli"
-        "php${SYSTEM[PHP_VERSION]}-bcmath"
-        "libapache2-mod-php${SYSTEM[PHP_VERSION]}"
-    )
-    
-    total=${#php_packages[@]}
-    current=0
-    
-    for pkg in "${php_packages[@]}"; do
-        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${pkg}" 2>/dev/null || {
-            warn "Package ${pkg} not available, skipping..."
-        }
-        current=$((current + 1))
-        show_progress ${current} ${total}
-    done
-    
-    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-        "php${SYSTEM[PHP_VERSION]}-redis" \
-        "php${SYSTEM[PHP_VERSION]}-apcu" 2>/dev/null || true
-    
-    success "All packages installed"
-}
-
-configure_php() {
-    print_step 5 12 "Configuring PHP"
-    
-    local php_ini="/etc/php/${SYSTEM[PHP_VERSION]}/apache2/php.ini"
-    
-    if [[ ! -f "${php_ini}" ]]; then
-        php_ini="/etc/php/${SYSTEM[PHP_VERSION]}/fpm/php.ini"
-    fi
-    
-    if [[ ! -f "${php_ini}" ]]; then
-        warn "PHP configuration file not found, skipping..."
+find_fpm() {
+    if [[ "$OS_FAMILY" == alpine ]]; then
+        [[ -d "$FPM_POOL_DIR" ]] || die "PHP-FPM pool directory not found: $FPM_POOL_DIR"
         return
     fi
-    
-    info "Configuring ${php_ini}..."
-    
-    cp "${php_ini}" "${php_ini}.backup"
-    
-    sed -i "s/^memory_limit.*/memory_limit = 256M/" "${php_ini}"
-    sed -i "s/^upload_max_filesize.*/upload_max_filesize = 100M/" "${php_ini}"
-    sed -i "s/^post_max_size.*/post_max_size = 100M/" "${php_ini}"
-    sed -i "s/^max_execution_time.*/max_execution_time = 600/" "${php_ini}"
-    sed -i "s/^;*max_input_vars.*/max_input_vars = 5000/" "${php_ini}"
-    sed -i "s|^;*date.timezone.*|date.timezone = ${CONFIG[TIMEZONE]}|" "${php_ini}"
-    sed -i "s/^;*session.cookie_httponly.*/session.cookie_httponly = On/" "${php_ini}"
-    
-    info "Configuring PHP OPcache..."
-    cat >> "${php_ini}" << 'OPCACHE'
-
-; GLPI Optimizations
-opcache.enable=1
-opcache.memory_consumption=256
-opcache.interned_strings_buffer=16
-opcache.max_accelerated_files=10000
-opcache.validate_timestamps=0
-opcache.save_comments=1
-opcache.fast_shutdown=1
-OPCACHE
-    
-    local fpm_conf="/etc/php/${SYSTEM[PHP_VERSION]}/fpm/pool.d/www.conf"
-    if [[ -f "${fpm_conf}" ]]; then
-        sed -i "s/^;*request_terminate_timeout.*/request_terminate_timeout = 600/" "${fpm_conf}"
+    local candidate
+    local native_php_version
+    native_php_version=$("$PHP_BIN" -r 'echo PHP_MAJOR_VERSION,".",PHP_MINOR_VERSION;')
+    for candidate in "/etc/php/$native_php_version/fpm/pool.d" /etc/php-fpm.d /etc/php8/fpm/php-fpm.d /etc/php8/fpm/pool.d; do
+        if [[ -d "$candidate" ]]; then FPM_POOL_DIR=$candidate; break; fi
+    done
+    [[ -n "$FPM_POOL_DIR" ]] || die 'Could not locate PHP-FPM pool configuration'
+    if [[ "$OS_FAMILY" == debian ]]; then
+        FPM_SOCKET=/run/php/glpi-fpm.sock
+        FPM_SERVICE="php$($PHP_BIN -r 'echo PHP_MAJOR_VERSION,".",PHP_MINOR_VERSION;')-fpm"
+    elif [[ "$OS_FAMILY" == suse ]]; then FPM_SERVICE=php-fpm
+    else FPM_SERVICE=php-fpm; FPM_SOCKET=/run/php-fpm/glpi-fpm.sock
     fi
-    
-    success "PHP configured with optimizations"
+}
+
+check_runtime() {
+    if ! command -v "$PHP_BIN" >/dev/null 2>&1; then
+        if command -v php8 >/dev/null 2>&1; then PHP_BIN=php8; else die 'PHP CLI unavailable'; fi
+    fi
+    local php_version missing="" ext
+    php_version=$($PHP_BIN -r 'echo PHP_VERSION;')
+    version_at_least "$php_version" 8.2.0 || die "GLPI 11 needs PHP >= 8.2. Installed: $php_version. Use a supported OS/repository."
+    for ext in bcmath curl dom fileinfo filter gd intl libxml mbstring mysqli openssl session simplexml tokenizer xmlreader xmlwriter zlib; do
+        "$PHP_BIN" -r "exit(extension_loaded('$ext') ? 0 : 1);" || missing="$missing $ext"
+    done
+    [[ -z "$missing" ]] || die "Missing PHP modules:$missing"
+    find_fpm
+    info "PHP $php_version with required extensions, FPM service $FPM_SERVICE"
+    command -v mariadb >/dev/null || command -v mysql >/dev/null || die 'MariaDB client not found'
+}
+
+db_cli() { if command -v mariadb >/dev/null; then mariadb "$@"; else mysql "$@"; fi; }
+
+check_database_version() {
+    local installed
+    installed=$(db_cli --batch --skip-column-names -e 'SELECT VERSION()') || die 'Local MariaDB/MySQL root socket authentication failed'
+    local numeric=${installed%%-*}
+    if [[ "$installed" == *MariaDB* ]]; then
+        version_at_least "$numeric" 10.5.0 || die "MariaDB $installed is too old (minimum 10.5)"
+    else
+        version_at_least "$numeric" 8.0.0 || die "MySQL $installed is too old (minimum 8.0)"
+    fi
+    info "Database engine: $installed"
+}
+
+preflight() {
+    [[ $EUID -eq 0 || "$DRY_RUN" == true ]] || die 'Run as root (sudo)'
+    [[ ! -e "$INSTALL_DIR" && ! -e "$CONFIG_DIR" && ! -e "$DATA_DIR" ]] || die "GLPI already exists; upgrades/reinstallations are intentionally blocked: $INSTALL_DIR"
+    [[ ! -e "$CREDENTIALS" ]] || die "Existing installer credentials found at $CREDENTIALS; refusing to replace"
+    case "$OS_ID" in
+        debian) version_at_least "$OS_VERSION" 12 || die 'Debian 12+ is required for GLPI 11 without third-party PHP repositories' ;;
+        ubuntu) version_at_least "$OS_VERSION" 24.04 || die 'Ubuntu 24.04 LTS+ is required for GLPI 11 without third-party PHP repositories' ;;
+        rhel|rocky|almalinux|ol|centos) version_at_least "$OS_VERSION" 9 || die 'RHEL-compatible version 9+ is required' ;;
+        alpine) version_at_least "$OS_VERSION" 3.20 || die 'Alpine 3.20+ is required' ;;
+    esac
+    if [[ "$OS_FAMILY" != alpine && "$OS_FAMILY" != suse ]]; then
+        info 'Platform tier: Debian/RHEL family (managed packages)'
+    else
+        warn 'Platform tier: Alpine/SUSE; package availability and PHP-FPM service names vary by release. Verify on staging first.'
+    fi
+    if [[ "$DRY_RUN" == true ]]; then
+        info "DRY RUN: would install Apache + PHP-FPM + MariaDB + GLPI ${GLPI_VERSION:-latest}"
+        info "DRY RUN: install at $INSTALL_DIR; database $DB_NAME; Apache config $APACHE_CONF"
+        info 'DRY RUN: no packages, services, files, databases or firewall rules changed'
+        exit 0
+    fi
+    local mem disk
+    mem=$(awk '/MemTotal:/{print int($2/1024)}' /proc/meminfo)
+    # LXC can expose host MemTotal; prefer its actual cgroup memory limit.
+    local cgroup_bytes=""
+    if [[ -r /sys/fs/cgroup/memory.max ]]; then
+        cgroup_bytes=$(cat /sys/fs/cgroup/memory.max)
+    elif [[ -r /sys/fs/cgroup/memory/memory.limit_in_bytes ]]; then
+        cgroup_bytes=$(cat /sys/fs/cgroup/memory/memory.limit_in_bytes)
+    fi
+    if [[ "$cgroup_bytes" =~ ^[0-9]+$ ]] && (( cgroup_bytes > 0 )); then
+        local cgroup_megabytes=$((cgroup_bytes / 1024 / 1024))
+        if (( cgroup_megabytes < mem )); then mem=$cgroup_megabytes; fi
+    fi
+    disk=$(df -Pk /var | awk 'NR==2{print $4}')
+    ((mem >= 1024)) || die "Insufficient RAM: ${mem} MiB (minimum 1024 MiB)"
+    ((disk >= 4*1024*1024)) || die 'Need at least 4 GiB of free space on /var'
+    [[ -e "/usr/share/zoneinfo/$TIMEZONE" ]] || die "Unknown timezone: $TIMEZONE"
+    command -v curl >/dev/null || die 'curl is required (install curl first)'
+    command -v tar >/dev/null || die 'tar is required (install tar first)'
+    if [[ "$YES" == false ]]; then
+        [[ -t 0 ]] || die 'Non-interactive shell: pass --yes'
+        printf 'Install GLPI on this dedicated %s server? [y/N] ' "$OS_ID"
+        read -r answer
+        [[ "$answer" == y || "$answer" == Y ]] || die 'Cancelled'
+    fi
+}
+
+latest_release() {
+    if [[ -z "$GLPI_VERSION" ]]; then
+        info 'Fetching current stable GLPI release'
+        local response
+        response=$(curl --fail --silent --show-error --location --retry 3 --max-time 30 \
+            https://api.github.com/repos/glpi-project/glpi/releases/latest) || die 'GitHub release API unavailable'
+        GLPI_VERSION=$(printf '%s' "$response" | awk -F '"' '/"tag_name"/ {print $4; exit}')
+        [[ "$GLPI_VERSION" =~ ^(10|11)\.[0-9]+\.[0-9]+$ ]] || die 'Unexpected GLPI release tag'
+    fi
+    info "GLPI version selected: $GLPI_VERSION"
 }
 
 configure_database() {
-    print_step 6 12 "Configuring Database"
-    
-    info "Starting MariaDB..."
-    systemctl start mariadb
-    systemctl enable mariadb
-    
-    info "Applying MariaDB performance tuning..."
-    cat > "/etc/mysql/mariadb.conf.d/99-glpi.cnf" << 'MARIADB'
-[mysqld]
-# GLPI Performance Tuning
-innodb_buffer_pool_size = 256M
-innodb_log_file_size = 64M
-max_connections = 200
-query_cache_type = 1
-query_cache_size = 32M
-query_cache_limit = 2M
-innodb_flush_log_at_trx_commit = 2
-innodb_file_per_table = 1
-MARIADB
-    
-    systemctl restart mariadb
-    sleep 2
-    
-    if [[ -z "${CONFIG[DB_PASS]}" ]]; then
-        info "Generating secure database password..."
-        CONFIG[DB_PASS]=$(head -c 32 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9!@#%^&*' | head -c 24)
-        
-        if [[ -z "${CONFIG[DB_PASS]}" || ${#CONFIG[DB_PASS]} -lt 20 ]]; then
-            CONFIG[DB_PASS]=$(date +%s%N | sha256sum | base64 | head -c 24)
-        fi
+    service_action enable "$DB_SERVICE"
+    if [[ "$OS_FAMILY" == alpine && ! -d /var/lib/mysql/mysql ]]; then
+        mariadb-install-db --user=mysql --datadir=/var/lib/mysql >/dev/null
     fi
-    
-    info "Creating database and user..."
-    
-    mysql -e "DROP USER IF EXISTS '${CONFIG[DB_USER]}'@'localhost';" 2>/dev/null || true
-    mysql -e "CREATE DATABASE IF NOT EXISTS \`${CONFIG[DB_NAME]}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
-    mysql -e "CREATE USER '${CONFIG[DB_USER]}'@'localhost' IDENTIFIED BY '${CONFIG[DB_PASS]}';"
-    mysql -e "GRANT ALL PRIVILEGES ON \`${CONFIG[DB_NAME]}\`.* TO '${CONFIG[DB_USER]}'@'localhost';"
-    mysql -e "FLUSH PRIVILEGES;"
-    
-    mysql_tzinfo_to_sql /usr/share/zoneinfo 2>/dev/null | mysql mysql 2>/dev/null || true
-    mysql -e "GRANT SELECT ON mysql.time_zone_name TO '${CONFIG[DB_USER]}'@'localhost';" 2>/dev/null || true
-    mysql -e "FLUSH PRIVILEGES;"
-    
-    if mysql -u"${CONFIG[DB_USER]}" -p"${CONFIG[DB_PASS]}" -e "USE ${CONFIG[DB_NAME]};" 2>/dev/null; then
-        success "Database connection verified"
-    else
-        fatal "Database connection failed - check credentials"
-    fi
-    
-    success "Database configured with performance tuning"
-    info "  ├─ Database: ${CONFIG[DB_NAME]}"
-    info "  ├─ User: ${CONFIG[DB_USER]}"
-    info "  └─ Password: [SECURED - saved to /root/.glpi_credentials]"
+    service_action start "$DB_SERVICE"
+    check_database_version
+    local exists
+    exists=$(db_cli --batch --skip-column-names -e "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME='$DB_NAME'" || true)
+    [[ -z "$exists" ]] || die "Database $DB_NAME already exists: refusing to alter it"
+    exists=$(db_cli --batch --skip-column-names -e "SELECT User FROM mysql.user WHERE User='$DB_USER' AND Host='localhost'" || true)
+    [[ -z "$exists" ]] || die "Database user $DB_USER@localhost already exists: refusing to alter it"
+    [[ -n "$DB_PASS" ]] || DB_PASS=$(openssl rand -hex 24)
+    db_cli <<SQL
+CREATE DATABASE \`$DB_NAME\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER '$DB_USER'@'localhost' IDENTIFIED BY '$DB_PASS';
+GRANT ALL PRIVILEGES ON \`$DB_NAME\`.* TO '$DB_USER'@'localhost';
+SQL
+    # If installation fails later, preserve the database for inspection/recovery.
+    info "Created new database $DB_NAME with dedicated user"
 }
 
 download_glpi() {
-    print_step 7 12 "Downloading GLPI ${CONFIG[GLPI_VERSION]}"
-    
-    local temp_dir=$(mktemp -d)
-    local archive="${temp_dir}/glpi.tgz"
-    
-    info "Downloading from GitHub..."
-    
-    if ! wget -q --show-progress -O "${archive}" "${CONFIG[GLPI_DOWNLOAD_URL]}"; then
-        rm -rf "${temp_dir}"
-        fatal "Failed to download GLPI"
-    fi
-    
-    info "Verifying archive integrity..."
-    if ! tar -tzf "${archive}" &>/dev/null; then
-        rm -rf "${temp_dir}"
-        fatal "Downloaded archive is corrupted"
-    fi
-    
-    if [[ -d "${CONFIG[INSTALL_DIR]}" ]]; then
-        info "Backing up existing installation..."
-        local backup_name="glpi_backup_$(date +%Y%m%d_%H%M%S)"
-        mv "${CONFIG[INSTALL_DIR]}" "${BACKUP_DIR}/${backup_name}"
-        success "Backup created: ${BACKUP_DIR}/${backup_name}"
-    fi
-    
-    info "Extracting..."
-    tar -xzf "${archive}" -C "${temp_dir}"
-    mv "${temp_dir}/glpi" "${CONFIG[INSTALL_DIR]}"
-    
-    rm -rf "${temp_dir}"
-    
-    success "GLPI downloaded and extracted"
+    TMP_DIR=$(mktemp -d)
+    local archive="$TMP_DIR/glpi.tgz"
+    local url="https://github.com/glpi-project/glpi/releases/download/$GLPI_VERSION/glpi-$GLPI_VERSION.tgz"
+    curl --fail --location --retry 3 --show-error --silent --proto '=https' --tlsv1.2 \
+        "$url" -o "$archive" || die 'Failed to download official GLPI release archive'
+    tar -tzf "$archive" >"$TMP_DIR/list" || die 'Invalid release archive'
+    grep -q '^glpi/' "$TMP_DIR/list" || die 'Release archive has no glpi/ root folder'
+    if grep -Eq '(^/|(^|/)\.\.(/|$))' "$TMP_DIR/list"; then die 'Unsafe release archive member path'; fi
+    mkdir -p /var/www
+    tar -xzf "$archive" --no-same-owner -C /var/www
+    [[ -f "$INSTALL_DIR/bin/console" && -d "$INSTALL_DIR/public" ]] || die 'Extracted GLPI layout not recognized'
 }
 
 configure_glpi() {
-    print_step 8 12 "Configuring GLPI"
-    
-    info "Creating directory structure..."
-    
-    mkdir -p "${GLPI_VAR_DIR}"/{files,marketplace}
-    mkdir -p "${GLPI_VAR_DIR}/files"/{_cron,_dumps,_graphs,_lock,_pictures,_plugins,_rss,_sessions,_tmp,_uploads,_cache}
-    mkdir -p "${GLPI_LOG_DIR}"
-    mkdir -p "${GLPI_CONFIG_DIR}"
-    
-    if [[ -d "${CONFIG[INSTALL_DIR]}/files" ]]; then
-        cp -rn "${CONFIG[INSTALL_DIR]}/files"/* "${GLPI_VAR_DIR}/files/" 2>/dev/null || true
-        rm -rf "${CONFIG[INSTALL_DIR]}/files"
-    fi
-    
-    if [[ -d "${CONFIG[INSTALL_DIR]}/marketplace" ]]; then
-        cp -rn "${CONFIG[INSTALL_DIR]}/marketplace"/* "${GLPI_VAR_DIR}/marketplace/" 2>/dev/null || true
-        rm -rf "${CONFIG[INSTALL_DIR]}/marketplace"
-    fi
-    
-    if [[ -d "${CONFIG[INSTALL_DIR]}/config" ]]; then
-        cp -rn "${CONFIG[INSTALL_DIR]}/config"/* "${GLPI_CONFIG_DIR}/" 2>/dev/null || true
-        rm -rf "${CONFIG[INSTALL_DIR]}/config"
-    fi
-    
-    info "Creating configuration files..."
-    
-    cat > "${CONFIG[INSTALL_DIR]}/inc/downstream.php" << 'DOWNSTREAM'
+    mkdir -p "$DATA_DIR/files" "$DATA_DIR/marketplace" "$GLPI_LOG_DIR" "$CONFIG_DIR"
+    # Move bundled writable directories away from the HTTP document root.
+    local folder target
+    for folder in files marketplace config; do
+        case "$folder" in files) target="$DATA_DIR/files" ;; marketplace) target="$DATA_DIR/marketplace" ;; config) target="$CONFIG_DIR" ;; esac
+        if [[ -d "$INSTALL_DIR/$folder" ]]; then
+            cp -a "$INSTALL_DIR/$folder/." "$target/"
+            rm -rf -- "${INSTALL_DIR:?}/$folder"
+        fi
+    done
+    cat > "$INSTALL_DIR/inc/downstream.php" <<'PHP'
 <?php
 define('GLPI_CONFIG_DIR', '/etc/glpi/');
 if (file_exists(GLPI_CONFIG_DIR . '/local_define.php')) {
     require_once GLPI_CONFIG_DIR . '/local_define.php';
 }
-DOWNSTREAM
-
-    cat > "${GLPI_CONFIG_DIR}/local_define.php" << LOCALDEFINE
+PHP
+    cat > "$CONFIG_DIR/local_define.php" <<'PHP'
 <?php
-define('GLPI_VAR_DIR', '${GLPI_VAR_DIR}/files');
-define('GLPI_MARKETPLACE_DIR', '${GLPI_VAR_DIR}/marketplace');
-define('GLPI_LOG_DIR', '${GLPI_LOG_DIR}');
-define('GLPI_DOC_DIR', GLPI_VAR_DIR);
-define('GLPI_CRON_DIR', GLPI_VAR_DIR . '/_cron');
-define('GLPI_DUMP_DIR', GLPI_VAR_DIR . '/_dumps');
-define('GLPI_GRAPH_DIR', GLPI_VAR_DIR . '/_graphs');
-define('GLPI_LOCK_DIR', GLPI_VAR_DIR . '/_lock');
-define('GLPI_PICTURE_DIR', GLPI_VAR_DIR . '/_pictures');
-define('GLPI_PLUGIN_DOC_DIR', GLPI_VAR_DIR . '/_plugins');
-define('GLPI_RSS_DIR', GLPI_VAR_DIR . '/_rss');
-define('GLPI_SESSION_DIR', GLPI_VAR_DIR . '/_sessions');
-define('GLPI_TMP_DIR', GLPI_VAR_DIR . '/_tmp');
-define('GLPI_UPLOAD_DIR', GLPI_VAR_DIR . '/_uploads');
-define('GLPI_CACHE_DIR', GLPI_VAR_DIR . '/_cache');
-LOCALDEFINE
+define('GLPI_VAR_DIR', '/var/lib/glpi/files');
+define('GLPI_MARKETPLACE_DIR', '/var/lib/glpi/marketplace');
+define('GLPI_LOG_DIR', '/var/log/glpi');
+PHP
+    chown -R root:root "$INSTALL_DIR"
+    find "$INSTALL_DIR" -type d -exec chmod 755 {} +
+    find "$INSTALL_DIR" -type f -exec chmod 644 {} +
+    chown -R "$WEB_USER:$WEB_GROUP" "$DATA_DIR" "$GLPI_LOG_DIR" "$CONFIG_DIR"
+    chmod -R u+rwX,g+rX,o-rwx "$DATA_DIR" "$GLPI_LOG_DIR" "$CONFIG_DIR"
+    chmod 2770 "$DATA_DIR" "$GLPI_LOG_DIR" "$CONFIG_DIR"
+    # GLPI must write its DB config during the web-based initial setup.
+    chmod g+w "$CONFIG_DIR"
+    if command -v getenforce >/dev/null && [[ $(getenforce) == Enforcing ]]; then
+        if command -v semanage >/dev/null && command -v restorecon >/dev/null; then
+            local path
+            for path in "$DATA_DIR" "$GLPI_LOG_DIR" "$CONFIG_DIR"; do
+                semanage fcontext -a -t httpd_sys_rw_content_t "${path}(/.*)?" 2>/dev/null || true
+                restorecon -RF "$path"
+            done
+            semanage fcontext -a -t httpd_var_run_t "$FPM_SOCKET" 2>/dev/null || true
+        else
+            die 'SELinux enforcing: install semanage/restorecon tools, then retry'
+        fi
+    fi
+}
 
-    info "Setting permissions..."
-    
-    chown -R www-data:www-data "${CONFIG[INSTALL_DIR]}"
-    chown -R www-data:www-data "${GLPI_VAR_DIR}"
-    chown -R www-data:www-data "${GLPI_LOG_DIR}"
-    chown -R www-data:www-data "${GLPI_CONFIG_DIR}"
-    
-    find "${CONFIG[INSTALL_DIR]}" -type d -exec chmod 755 {} \;
-    find "${CONFIG[INSTALL_DIR]}" -type f -exec chmod 644 {} \;
-    chmod -R 770 "${GLPI_VAR_DIR}"
-    chmod -R 770 "${GLPI_LOG_DIR}"
-    chmod -R 770 "${GLPI_CONFIG_DIR}"
-    
-    success "GLPI configured"
+configure_fpm() {
+    mkdir -p "$FPM_POOL_DIR" "$(dirname "$FPM_SOCKET")"
+    cat > "$FPM_POOL_DIR/glpi.conf" <<EOF
+[glpi]
+user = $WEB_USER
+group = $WEB_GROUP
+listen = $FPM_SOCKET
+listen.owner = $WEB_USER
+listen.group = $WEB_GROUP
+listen.mode = 0660
+pm = dynamic
+pm.max_children = 8
+pm.start_servers = 2
+pm.min_spare_servers = 1
+pm.max_spare_servers = 3
+php_admin_value[memory_limit] = 256M
+php_admin_value[upload_max_filesize] = 64M
+php_admin_value[post_max_size] = 70M
+php_admin_value[max_execution_time] = 300
+php_admin_value[date.timezone] = $TIMEZONE
+php_admin_flag[session.cookie_httponly] = on
+EOF
+    service_action enable "$FPM_SERVICE"
+    service_action restart "$FPM_SERVICE" || service_action start "$FPM_SERVICE"
+    [[ -S "$FPM_SOCKET" ]] || die "PHP-FPM socket not found: $FPM_SOCKET"
+    if command -v restorecon >/dev/null && command -v getenforce >/dev/null && [[ $(getenforce) == Enforcing ]]; then
+        restorecon -v "$FPM_SOCKET"
+    fi
 }
 
 configure_apache() {
-    print_step 9 12 "Configuring Apache"
-    
-    local server_name="${CONFIG[DOMAIN]:-${SYSTEM[IP_ADDRESS]}}"
-    
-    info "Creating Apache virtual host..."
-    
-    cat > "/etc/apache2/sites-available/glpi.conf" << APACHE
+    mkdir -p "$(dirname "$APACHE_CONF")"
+    local server_name=${DOMAIN:-localhost}
+    cat > "$APACHE_CONF" <<EOF
 <VirtualHost *:80>
-    ServerName ${server_name}
-    DocumentRoot ${CONFIG[INSTALL_DIR]}/public
-
-    <Directory ${CONFIG[INSTALL_DIR]}/public>
+    ServerName $server_name
+    DocumentRoot $INSTALL_DIR/public
+    <Directory $INSTALL_DIR/public>
+        Options -Indexes +FollowSymLinks
+        AllowOverride None
         Require all granted
         RewriteEngine On
         RewriteCond %{REQUEST_FILENAME} !-f
         RewriteRule ^(.*)$ index.php [QSA,L]
+        <FilesMatch "\\.php$">
+            SetHandler "proxy:unix:$FPM_SOCKET|fcgi://localhost/"
+        </FilesMatch>
     </Directory>
-
-    <Directory ${CONFIG[INSTALL_DIR]}>
-        Require all denied
-    </Directory>
-
-    <Directory ${CONFIG[INSTALL_DIR]}/public>
-        Require all granted
-    </Directory>
-
-    # Security headers
     Header always set X-Content-Type-Options "nosniff"
+    Header always set Referrer-Policy "strict-origin-when-cross-origin"
     Header always set X-Frame-Options "SAMEORIGIN"
-    Header always set X-XSS-Protection "1; mode=block"
-
-    ErrorLog \${APACHE_LOG_DIR}/glpi_error.log
-    CustomLog \${APACHE_LOG_DIR}/glpi_access.log combined
 </VirtualHost>
-APACHE
-
-    info "Enabling Apache modules..."
-    a2enmod rewrite 2>/dev/null || true
-    a2enmod headers 2>/dev/null || true
-    a2enmod ssl 2>/dev/null || true
-    
-    info "Enabling GLPI site..."
-    a2dissite 000-default.conf 2>/dev/null || true
-    a2ensite glpi.conf 2>/dev/null || true
-    
-    info "Testing Apache configuration..."
-    if ! apache2ctl configtest 2>/dev/null; then
-        fatal "Apache configuration test failed"
-    fi
-    
-    info "Restarting Apache..."
-    systemctl restart apache2
-    systemctl enable apache2
-    
-    success "Apache configured"
+EOF
+    case "$OS_FAMILY" in
+        debian)
+            a2enmod rewrite headers proxy proxy_fcgi >/dev/null
+            a2ensite "$(basename "$APACHE_CONF")" >/dev/null ;;
+        rhel)
+            # RHEL's standard modules load from /etc/httpd/conf.modules.d.
+            : ;;
+        suse)
+            a2enmod rewrite headers proxy proxy_fcgi >/dev/null || die 'Enable Apache rewrite/headers/proxy_fcgi modules manually' ;;
+        alpine)
+            # Alpine ships LoadModule statements in /etc/apache2/httpd.conf.
+            sed -i -E 's/^#(LoadModule (rewrite_module|headers_module|proxy_module|proxy_fcgi_module) )/\1/' /etc/apache2/httpd.conf ;;
+    esac
+    if command -v apache2ctl >/dev/null; then apache2ctl configtest
+    else httpd -t; fi
+    service_action enable "$WEB_SERVICE"
+    service_action restart "$WEB_SERVICE" || service_action start "$WEB_SERVICE"
 }
 
-install_ssl() {
-    print_step 10 12 "Configuring SSL Certificate"
-    
-    if [[ "${CONFIG[ENABLE_SSL]}" != "true" || -z "${CONFIG[DOMAIN]}" ]]; then
-        info "SSL configuration skipped (no domain or SSL disabled)"
-        return 0
-    fi
-    
-    info "Installing Certbot..."
-    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq certbot python3-certbot-apache 2>/dev/null || {
-        warn "Failed to install Certbot, skipping SSL configuration"
-        return 1
-    }
-    
-    if [[ -z "${CONFIG[SSL_EMAIL]}" ]]; then
-        warn "No email provided for SSL certificate, skipping..."
-        return 1
-    fi
-    
-    validate_input "email" "${CONFIG[SSL_EMAIL]}"
-    
-    info "Requesting SSL certificate from Let's Encrypt..."
-    if certbot --apache -d "${CONFIG[DOMAIN]}" \
-        --non-interactive \
-        --agree-tos \
-        --redirect \
-        -m "${CONFIG[SSL_EMAIL]}" 2>&1 | tee -a "${LOG_FILE}"; then
-        success "SSL certificate installed successfully"
-        info "  └─ HTTPS enabled for ${CONFIG[DOMAIN]}"
+configure_cron() {
+    if [[ "$OS_FAMILY" == alpine ]]; then
+        mkdir -p /etc/periodic/15min
+        cat > /etc/periodic/15min/glpi <<EOF
+#!/bin/sh
+cd '$INSTALL_DIR' && su '$WEB_USER' -s /bin/sh -c '$PHP_BIN $INSTALL_DIR/front/cron.php' >/dev/null 2>&1
+EOF
+        chmod 750 /etc/periodic/15min/glpi
+        service_action enable crond
+        service_action start crond
     else
-        warn "SSL certificate installation failed - continuing with HTTP"
-        return 1
+        cat > /etc/cron.d/glpi <<EOF
+0-59/2 * * * * $WEB_USER $PHP_BIN $INSTALL_DIR/front/cron.php >/dev/null 2>&1
+EOF
+        chmod 644 /etc/cron.d/glpi
+        local cron_service
+        cron_service=$( [[ "$OS_FAMILY" == rhel ]] && echo crond || echo cron )
+        service_action enable "$cron_service" || warn 'Could not enable cron service'
+        service_action start "$cron_service" || warn 'Could not start cron service'
     fi
 }
 
-finalize_installation() {
-    print_step 11 12 "Finalizing Installation"
-    
-    info "Configuring cron job..."
-    cat > "/etc/cron.d/glpi" << CRON
-*/2 * * * * www-data /usr/bin/php ${CONFIG[INSTALL_DIR]}/front/cron.php &>/dev/null
-CRON
-    chmod 644 /etc/cron.d/glpi
-    
-    info "Saving credentials securely..."
-    cat > "/root/.glpi_credentials" << CREDENTIALS
-# GLPI Installation Credentials
-# Generated: $(date)
-# WARNING: Keep this file secure!
-
-URL=http://${SYSTEM[IP_ADDRESS]}
-HTTPS_URL=https://${CONFIG[DOMAIN]:-N/A}
-VERSION=${CONFIG[GLPI_VERSION]}
-
-DB_HOST=${CONFIG[DB_HOST]}
-DB_NAME=${CONFIG[DB_NAME]}
-DB_USER=${CONFIG[DB_USER]}
-DB_PASS=${CONFIG[DB_PASS]}
-
-# Default GLPI Accounts (CHANGE IMMEDIATELY!)
-# Super-Admin: glpi / glpi
-# Admin: tech / tech
-# Normal: normal / normal
-# Post-only: post-only / post-only
-CREDENTIALS
-    chmod 600 /root/.glpi_credentials
-    
-    success "Installation finalized"
-}
-
-verify_installation() {
-    print_step 12 12 "Verifying Installation"
-    
-    local errors=0
-    
-    info "Checking web service..."
-    local http_code=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost" 2>/dev/null || echo "000")
-    if [[ "${http_code}" =~ ^(200|302|301)$ ]]; then
-        success "Web service is responding (HTTP ${http_code})"
+configure_tls() {
+    "$SSL" || return 0
+    if [[ "$OS_FAMILY" == debian ]]; then
+        apt-get install -y certbot python3-certbot-apache || { warn 'Certbot packages unavailable; set up TLS manually'; return 0; }
+    elif [[ "$OS_FAMILY" == rhel ]]; then
+        dnf install -y certbot python3-certbot-apache || { warn 'Certbot packages unavailable; set up TLS manually'; return 0; }
     else
-        error "Web service is not responding correctly (HTTP ${http_code})"
-        errors=$((errors + 1))
+        warn 'Automatic TLS is not available on this family; configure HTTPS with your reverse proxy or Certbot'
+        return
     fi
-    
-    info "Checking database connection..."
-    if mysql -u"${CONFIG[DB_USER]}" -p"${CONFIG[DB_PASS]}" \
-        -e "SELECT 1 FROM information_schema.tables WHERE table_schema='${CONFIG[DB_NAME]}' LIMIT 1;" &>/dev/null; then
-        success "Database is accessible"
-    else
-        error "Database connection failed"
-        errors=$((errors + 1))
-    fi
-    
-    info "Checking file permissions..."
-    if [[ -w "${GLPI_VAR_DIR}/files/_tmp" ]]; then
-        success "File permissions are correct"
-    else
-        error "File permissions may be incorrect"
-        errors=$((errors + 1))
-    fi
-    
-    info "Checking Apache configuration..."
-    if apache2ctl configtest 2>/dev/null; then
-        success "Apache configuration is valid"
-    else
-        error "Apache configuration has issues"
-        errors=$((errors + 1))
-    fi
-    
-    if [[ ${errors} -gt 0 ]]; then
-        warn "Installation completed with ${errors} warning(s)"
-    else
-        success "All verification checks passed!"
+    if ! certbot --apache --non-interactive --agree-tos --redirect -d "$DOMAIN" -m "$SSL_EMAIL"; then
+        warn 'Certbot failed. HTTP is still available; configure TLS before exposing GLPI publicly.'
     fi
 }
 
-print_summary() {
-    local duration=$(($(date +%s) - START_TIME))
-    
-    echo ""
-    echo -e "${C_GREEN}${C_BOLD}"
-    cat << 'SUCCESS_BANNER'
-╔═══════════════════════════════════════════════════════════════════════════╗
-║                     INSTALLATION COMPLETE / SUCCÈS                        ║
-╚═══════════════════════════════════════════════════════════════════════════╝
-SUCCESS_BANNER
-    echo -e "${C_RESET}"
-    
-    echo -e "${C_CYAN}═══════════════════════════════════════════════════════════════════════════${C_RESET}"
-    echo -e "${C_BOLD}                          INSTALLATION SUMMARY${C_RESET}"
-    echo -e "${C_CYAN}═══════════════════════════════════════════════════════════════════════════${C_RESET}"
-    echo ""
-    
-    if [[ "${CONFIG[ENABLE_SSL]}" == "true" && -n "${CONFIG[DOMAIN]}" ]]; then
-        echo -e "  ${C_BOLD}Access URL (HTTPS):${C_RESET} ${C_GREEN}https://${CONFIG[DOMAIN]}${C_RESET}"
-        echo -e "  ${C_BOLD}Access URL (HTTP): ${C_RESET} ${C_YELLOW}http://${SYSTEM[IP_ADDRESS]}${C_RESET}"
-    else
-        echo -e "  ${C_BOLD}Access URL:${C_RESET}        ${C_GREEN}http://${SYSTEM[IP_ADDRESS]}${C_RESET}"
-    fi
-    
-    echo -e "  ${C_BOLD}GLPI Version:${C_RESET}      ${CONFIG[GLPI_VERSION]}"
-    echo -e "  ${C_BOLD}Duration:${C_RESET}          $((duration / 60))m $((duration % 60))s"
-    echo ""
-    echo -e "${C_CYAN}───────────────────────────────────────────────────────────────────────────${C_RESET}"
-    echo -e "${C_BOLD}                        DATABASE CONFIGURATION${C_RESET}"
-    echo -e "${C_CYAN}───────────────────────────────────────────────────────────────────────────${C_RESET}"
-    echo ""
-    echo -e "  ${C_BOLD}Host:${C_RESET}              ${CONFIG[DB_HOST]}"
-    echo -e "  ${C_BOLD}Database:${C_RESET}          ${CONFIG[DB_NAME]}"
-    echo -e "  ${C_BOLD}Username:${C_RESET}          ${CONFIG[DB_USER]}"
-    echo -e "  ${C_BOLD}Password:${C_RESET}          ${CONFIG[DB_PASS]}"
-    echo ""
-    echo -e "${C_CYAN}───────────────────────────────────────────────────────────────────────────${C_RESET}"
-    echo -e "${C_BOLD}                        DEFAULT GLPI ACCOUNTS${C_RESET}"
-    echo -e "${C_CYAN}───────────────────────────────────────────────────────────────────────────${C_RESET}"
-    echo ""
-    echo -e "  ${C_BOLD}Super-Admin:${C_RESET}       glpi / glpi"
-    echo -e "  ${C_BOLD}Admin:${C_RESET}             tech / tech"
-    echo -e "  ${C_BOLD}Normal:${C_RESET}            normal / normal"
-    echo -e "  ${C_BOLD}Post-only:${C_RESET}         post-only / post-only"
-    echo ""
-    echo -e "${C_CYAN}═══════════════════════════════════════════════════════════════════════════${C_RESET}"
-    echo ""
-    echo -e "  ${C_YELLOW}${C_BOLD}⚠  POST-INSTALLATION STEPS:${C_RESET}"
-    echo ""
-    
-    if [[ "${CONFIG[ENABLE_SSL]}" == "true" && -n "${CONFIG[DOMAIN]}" ]]; then
-        echo -e "     1. Open ${C_BOLD}https://${CONFIG[DOMAIN]}${C_RESET} in your browser"
-    else
-        echo -e "     1. Open ${C_BOLD}http://${SYSTEM[IP_ADDRESS]}${C_RESET} in your browser"
-    fi
-    
-    echo -e "     2. Complete the setup wizard"
-    echo -e "     3. ${C_RED}${C_BOLD}CHANGE ALL DEFAULT PASSWORDS IMMEDIATELY!${C_RESET}"
-    echo -e "     4. Remove install script: ${C_BOLD}rm ${CONFIG[INSTALL_DIR]}/install/install.php${C_RESET}"
-    echo -e "     5. Review security recommendations in GLPI"
-    echo ""
-    echo -e "${C_CYAN}═══════════════════════════════════════════════════════════════════════════${C_RESET}"
-    echo ""
-    echo -e "  ${C_GREEN}Credentials saved:${C_RESET} /root/.glpi_credentials"
-    echo -e "  ${C_GREEN}Log file:${C_RESET}          ${LOG_FILE}"
-    echo -e "  ${C_GREEN}Backups:${C_RESET}           ${BACKUP_DIR}"
-    echo ""
-    
-    if [[ "${CONFIG[ENABLE_SSL]}" == "true" && -n "${CONFIG[DOMAIN]}" ]]; then
-        echo -e "  ${C_MAGENTA}${C_BOLD}🔒 SSL/HTTPS enabled and configured${C_RESET}"
-        echo ""
-    fi
+save_credentials() {
+    (umask 077; cat > "$CREDENTIALS" <<EOF
+# GLPI database credentials - keep private (root only)
+URL=http://${DOMAIN:-localhost}/
+VERSION=$GLPI_VERSION
+DB_HOST=localhost
+DB_NAME=$DB_NAME
+DB_USER=$DB_USER
+DB_PASS=$DB_PASS
+EOF
+    )
+    chmod 600 "$CREDENTIALS"
 }
-
-#-------------------------------------------------------------------------------
-# UNINSTALL FUNCTION
-#-------------------------------------------------------------------------------
-
-uninstall_glpi() {
-    print_banner
-    
-    echo -e "${C_RED}${C_BOLD}"
-    cat << 'UNINSTALL_BANNER'
-╔═══════════════════════════════════════════════════════════════════════════╗
-║                           GLPI UNINSTALLATION                             ║
-╚═══════════════════════════════════════════════════════════════════════════╝
-UNINSTALL_BANNER
-    echo -e "${C_RESET}"
-    
-    check_root
-    
-    warn "This will remove GLPI from your system!"
-    echo ""
-    [[ "${KEEP_DATABASE}" == "false" ]] && warn "Database will be DELETED!"
-    [[ "${KEEP_PACKAGES}" == "false" ]] && warn "Apache, MariaDB, PHP packages will be REMOVED!"
-    echo ""
-    
-    if [[ "${UNATTENDED}" != "true" ]]; then
-        if ! confirm "Are you sure you want to uninstall GLPI?" "n"; then
-            info "Uninstallation cancelled"
-            exit 0
-        fi
-    fi
-    
-    info "Stopping services..."
-    systemctl stop apache2 2>/dev/null || true
-    
-    info "Removing GLPI files..."
-    rm -rf "${GLPI_INSTALL_DIR}" 2>/dev/null || true
-    rm -rf "${GLPI_VAR_DIR}" 2>/dev/null || true
-    rm -rf "${GLPI_LOG_DIR}" 2>/dev/null || true
-    rm -rf "${GLPI_CONFIG_DIR}" 2>/dev/null || true
-    
-    info "Removing Apache configuration..."
-    a2dissite glpi.conf 2>/dev/null || true
-    rm -f /etc/apache2/sites-available/glpi.conf 2>/dev/null || true
-    a2ensite 000-default.conf 2>/dev/null || true
-    
-    info "Removing cron job..."
-    rm -f /etc/cron.d/glpi 2>/dev/null || true
-    
-    if [[ "${KEEP_DATABASE}" == "false" ]]; then
-        info "Removing database..."
-        
-        local db_name="glpi_db"
-        local db_user="glpi_user"
-        
-        if [[ -f /root/.glpi_credentials ]]; then
-            source /root/.glpi_credentials 2>/dev/null || true
-            db_name="${DB_NAME:-glpi_db}"
-            db_user="${DB_USER:-glpi_user}"
-        fi
-        
-        systemctl start mariadb 2>/dev/null || true
-        sleep 2
-        mysql -e "DROP DATABASE IF EXISTS \`${db_name}\`;" 2>/dev/null || true
-        mysql -e "DROP USER IF EXISTS '${db_user}'@'localhost';" 2>/dev/null || true
-        mysql -e "FLUSH PRIVILEGES;" 2>/dev/null || true
-        
-        success "Database removed"
-    fi
-    
-    if [[ "${KEEP_PACKAGES}" == "false" ]]; then
-        info "Removing packages..."
-        systemctl stop apache2 mariadb 2>/dev/null || true
-        
-        DEBIAN_FRONTEND=noninteractive apt-get purge -y -qq \
-            apache2 apache2-* \
-            mariadb-server mariadb-client mariadb-* \
-            php* libapache2-mod-php* \
-            certbot python3-certbot-apache 2>/dev/null || true
-        
-        apt-get autoremove -y -qq 2>/dev/null || true
-        apt-get clean 2>/dev/null || true
-        
-        success "Packages removed"
-    else
-        systemctl restart apache2 2>/dev/null || true
-    fi
-    
-    rm -f /root/.glpi_credentials 2>/dev/null || true
-    rm -f /etc/mysql/mariadb.conf.d/99-glpi.cnf 2>/dev/null || true
-    
-    echo ""
-    echo -e "${C_GREEN}${C_BOLD}GLPI has been uninstalled successfully!${C_RESET}"
-    echo ""
-}
-
-#-------------------------------------------------------------------------------
-# HELP & ARGUMENTS
-#-------------------------------------------------------------------------------
-
-show_help() {
-    cat << HELP
-${C_BOLD}GLPI Auto-Installer v${SCRIPT_VERSION}${C_RESET}
-Optimized for Debian and Ubuntu
-
-${C_BOLD}USAGE:${C_RESET}
-    ${SCRIPT_NAME_BASE} [OPTIONS]
-
-${C_BOLD}INSTALL OPTIONS:${C_RESET}
-    -h, --help              Show this help
-    -v, --verbose           Verbose output
-    -y, --yes               Non-interactive mode
-    -f, --force             Force install despite warnings
-    -d, --dry-run           Show what would be done
-    --db-name NAME          Database name (default: glpi_db)
-    --db-user USER          Database user (default: glpi_user)
-    --db-pass PASS          Database password (auto-generated)
-    --timezone TZ           Timezone (default: Europe/Paris)
-    --domain DOMAIN         Server domain name
-    --glpi-version VERSION  Install specific GLPI version (e.g., 10.0.15)
-    --enable-ssl            Enable SSL/HTTPS with Let's Encrypt
-    --ssl-email EMAIL       Email for SSL certificate (required with --enable-ssl)
-    --no-rollback           Disable automatic rollback on failure
-    --version               Show version
-
-${C_BOLD}UNINSTALL OPTIONS:${C_RESET}
-    --uninstall             Uninstall GLPI
-    --keep-db               Keep database when uninstalling
-    --keep-packages         Keep packages when uninstalling
-
-${C_BOLD}EXAMPLES:${C_RESET}
-    # Interactive install
-    sudo ${SCRIPT_NAME_BASE}
-    
-    # Automatic install with SSL
-    sudo ${SCRIPT_NAME_BASE} -y --domain glpi.example.com --enable-ssl --ssl-email admin@example.com
-    
-    # Install specific version
-    sudo ${SCRIPT_NAME_BASE} --glpi-version 10.0.15
-    
-    # Uninstall completely
-    sudo ${SCRIPT_NAME_BASE} --uninstall -y
-    
-    # Uninstall keeping database
-    sudo ${SCRIPT_NAME_BASE} --uninstall --keep-db
-
-${C_BOLD}SUPPORTED SYSTEMS:${C_RESET}
-    - Debian 10, 11, 12, 13
-    - Ubuntu 20.04, 22.04, 24.04
-
-${C_BOLD}NEW IN v4.1:${C_RESET}
-    ✓ Enhanced security (stronger passwords, input validation)
-    ✓ SSL/HTTPS support with Let's Encrypt
-    ✓ Automatic rollback on installation failure
-    ✓ Post-installation verification
-    ✓ MariaDB and PHP performance optimizations
-    ✓ Container environment detection
-    ✓ Specific version installation support
-    ✓ Progress indicators
-
-HELP
-}
-
-parse_arguments() {
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            -h|--help)          show_help; exit 0 ;;
-            -v|--verbose)       VERBOSE=true; shift ;;
-            -y|--yes)           UNATTENDED=true; shift ;;
-            -f|--force)         FORCE=true; shift ;;
-            -d|--dry-run)       DRY_RUN=true; shift ;;
-            --uninstall)        UNINSTALL_MODE=true; shift ;;
-            --keep-db)          KEEP_DATABASE=true; shift ;;
-            --keep-packages)    KEEP_PACKAGES=true; shift ;;
-            --no-rollback)      ROLLBACK_ENABLED=false; shift ;;
-            --enable-ssl)       CONFIG[ENABLE_SSL]="true"; shift ;;
-            --db-name)          CONFIG[DB_NAME]="$2"; validate_input "db_name" "$2"; shift 2 ;;
-            --db-user)          CONFIG[DB_USER]="$2"; validate_input "db_user" "$2"; shift 2 ;;
-            --db-pass)          CONFIG[DB_PASS]="$2"; shift 2 ;;
-            --timezone)         CONFIG[TIMEZONE]="$2"; shift 2 ;;
-            --domain)           CONFIG[DOMAIN]="$2"; validate_input "domain" "$2"; shift 2 ;;
-            --glpi-version)     CONFIG[GLPI_VERSION]="$2"; shift 2 ;;
-            --ssl-email)        CONFIG[SSL_EMAIL]="$2"; validate_input "email" "$2"; shift 2 ;;
-            --version)          echo "GLPI Auto-Installer v${SCRIPT_VERSION}"; exit 0 ;;
-            *)                  error "Unknown option: $1"; show_help; exit 1 ;;
-        esac
-    done
-    
-    if [[ "${CONFIG[ENABLE_SSL]}" == "true" ]]; then
-        if [[ -z "${CONFIG[DOMAIN]}" ]]; then
-            fatal "--domain is required when --enable-ssl is used"
-        fi
-        if [[ -z "${CONFIG[SSL_EMAIL]}" ]]; then
-            fatal "--ssl-email is required when --enable-ssl is used"
-        fi
-    fi
-}
-
-#-------------------------------------------------------------------------------
-# MAIN
-#-------------------------------------------------------------------------------
 
 main() {
-    parse_arguments "$@"
-    
-    [[ ! -t 0 ]] && UNATTENDED=true
-    
-    if [[ "${UNINSTALL_MODE}" == "true" ]]; then
-        uninstall_glpi
-        exit 0
-    fi
-    
-    print_banner
-    check_root
-    init_logging
-    acquire_lock
-    
-    info "Starting GLPI installation v${SCRIPT_VERSION}..."
-    info "Log file: ${LOG_FILE}"
-    [[ "${UNATTENDED}" == "true" ]] && info "Running in unattended mode"
-    [[ "${ROLLBACK_ENABLED}" == "true" ]] && info "Automatic rollback enabled"
-    
-    if [[ "${DRY_RUN}" == "true" ]]; then
-        warn "DRY RUN - No changes will be made"
-        check_network
-        detect_system
-        check_requirements
-        fetch_latest_version
-        success "Dry run completed"
-        exit 0
-    fi
-    
-    check_network
-    detect_system
-    check_requirements
-    fetch_latest_version
-    
-    if [[ "${UNATTENDED}" != "true" ]]; then
-        echo ""
-        echo -e "${C_BOLD}Installation Configuration:${C_RESET}"
-        echo -e "  GLPI Version:    ${CONFIG[GLPI_VERSION]}"
-        echo -e "  Database:        ${CONFIG[DB_NAME]}"
-        echo -e "  Timezone:        ${CONFIG[TIMEZONE]}"
-        [[ -n "${CONFIG[DOMAIN]}" ]] && echo -e "  Domain:          ${CONFIG[DOMAIN]}"
-        [[ "${CONFIG[ENABLE_SSL]}" == "true" ]] && echo -e "  SSL/HTTPS:       Enabled"
-        echo ""
-        if ! confirm "Proceed with installation?" "y"; then
-            fatal "Installation cancelled"
-        fi
-    fi
-    
-    install_packages
-    configure_php
+    platform
+    preflight
+    mkdir -p "$LOG_DIR"
+    LOG_FILE="$LOG_DIR/install_$(date +%Y%m%d_%H%M%S).log"
+    touch "$LOG_FILE"; chmod 600 "$LOG_FILE"
+    # Do not pipe xtrace, SQL/passwords, or credentials to the log.
+    info 'Installing distribution packages'
+    packages
+    check_runtime
+    latest_release
     configure_database
     download_glpi
     configure_glpi
+    configure_fpm
     configure_apache
-    install_ssl
-    finalize_installation
-    verify_installation
-    
-    ROLLBACK_ENABLED=false
-    
-    print_summary
+    configure_cron
+    save_credentials
+    configure_tls
+    info "Installation files ready: $INSTALL_DIR"
+    info "Open http://${DOMAIN:-YOUR_SERVER_IP}/ and complete the GLPI web installation wizard."
+    info "Credentials: $CREDENTIALS (mode 0600). Change the default GLPI account passwords."
+    warn 'Configure HTTPS and restrict network access before exposing GLPI to the internet.'
+    info 'A complete GLPI database upgrade and existing deployments are intentionally out of scope.'
 }
-
-main "$@"
+main
