@@ -576,6 +576,93 @@ EOF
     chmod 600 "$CREDENTIALS"
 }
 
+read_credential() {
+    local key=$1
+    [[ -f "$CREDENTIALS" && ! -L "$CREDENTIALS" ]] || return 0
+    awk -v key="$key" 'index($0, key "=") == 1 {print substr($0, length(key) + 2); exit}' "$CREDENTIALS"
+}
+
+identify_existing() {
+    [[ -d "$INSTALL_DIR" && ! -L "$INSTALL_DIR" && -f "$INSTALL_DIR/bin/console" ]] ||
+        die "GLPI not found at $INSTALL_DIR (bin/console missing)"
+    [[ -f "$INSTALL_DIR/inc/define.php" ]] || die 'Missing GLPI version file'
+    local path
+    for path in "$DATA_DIR" "$CONFIG_DIR" "$INSTALL_DIR/config" "$INSTALL_DIR/files" \
+                "$INSTALL_DIR/marketplace" "$INSTALL_DIR/plugins"; do
+        [[ ! -L "$path" ]] || die "Symlinked GLPI directory: $path. Handle this layout manually."
+    done
+}
+
+load_existing_database() {
+    local saved_name saved_user saved_host
+    saved_name=$(read_credential DB_NAME)
+    saved_user=$(read_credential DB_USER)
+    saved_host=$(read_credential DB_HOST)
+    if [[ -n "$saved_name" ]]; then
+        if [[ "$DB_NAME_EXPLICIT" == true && "$DB_NAME" != "$saved_name" ]]; then
+            die "Specified database differs from $CREDENTIALS"
+        fi
+        DB_NAME=$saved_name
+        DB_USER=${saved_user:-$DB_USER}
+    elif [[ "$DB_NAME_EXPLICIT" != true ]]; then
+        die "Supply --db-name for a legacy installation without $CREDENTIALS"
+    fi
+    [[ "$DB_NAME" =~ ^[a-zA-Z][a-zA-Z0-9_]{0,63}$ ]] || die 'Invalid saved database name'
+    [[ "$DB_USER" =~ ^[a-zA-Z][a-zA-Z0-9_]{0,31}$ ]] || die 'Invalid saved database user'
+    [[ -z "$saved_host" || "$saved_host" == localhost || "$saved_host" == 127.0.0.1 ]] ||
+        die "Remote SQL host ($saved_host) requires a manual backup"
+    command -v mariadb-dump >/dev/null 2>&1 || command -v mysqldump >/dev/null 2>&1 ||
+        die 'Install mariadb-dump or mysqldump before continuing'
+    db_cli --batch --skip-column-names -e \
+        "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME='$DB_NAME'" |
+        grep -Fxq "$DB_NAME" || die "Cannot access local database $DB_NAME"
+}
+
+existing_version() {
+    grep 'GLPI_VERSION' "$INSTALL_DIR/inc/define.php" |
+        grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 || true
+}
+
+glpi_console() {
+    local subcommand=$1
+    shift
+    if command -v runuser >/dev/null 2>&1; then
+        (cd "$INSTALL_DIR" && runuser -u "$WEB_USER" -- "$PHP_BIN" bin/console "$subcommand" --no-interaction "$@")
+    else
+        (cd "$INSTALL_DIR" && su -s /bin/sh "$WEB_USER" -c \
+            "'$PHP_BIN' bin/console '$subcommand' --no-interaction")
+    fi
+}
+
+backup_existing() {
+    local operation=$1 stamp path dump
+    stamp=$(date -u +%Y%m%dT%H%M%SZ)
+    BACKUP_PATH="$BACKUP_ROOT/${operation}_${stamp}_$"
+    mkdir -p "$BACKUP_PATH"
+    chmod 700 "$BACKUP_ROOT" "$BACKUP_PATH"
+    local -a paths=()
+    for path in "$INSTALL_DIR" "$DATA_DIR" "$CONFIG_DIR" "$GLPI_LOG_DIR" "$CREDENTIALS" \
+                "$APACHE_CONF" /etc/apache2/sites-available/glpi.conf \
+                /etc/cron.d/glpi /etc/periodic/15min/glpi; do
+        if [[ -e "$path" || -L "$path" ]]; then paths+=("${path#/}"); fi
+    done
+    ((${#paths[@]} > 0)) || die 'Nothing found to back up'
+    info 'Backing up GLPI files, configuration and persistent data'
+    tar -C / -czf "$BACKUP_PATH/files.tar.gz" -- "${paths[@]}" ||
+        die 'File backup failed; installation was not modified'
+    [[ -s "$BACKUP_PATH/files.tar.gz" ]] || die 'Empty file backup'
+    if command -v mariadb-dump >/dev/null 2>&1; then dump=mariadb-dump; else dump=mysqldump; fi
+    info "Backing up SQL database $DB_NAME"
+    "$dump" --single-transaction --quick --routines --events --triggers \
+        --databases "$DB_NAME" | gzip -1 > "$BACKUP_PATH/database.sql.gz" ||
+        die 'SQL backup failed; installation was not modified'
+    [[ -s "$BACKUP_PATH/database.sql.gz" ]] || die 'Empty SQL backup'
+    gzip -t "$BACKUP_PATH/database.sql.gz" || die 'Corrupted SQL backup'
+    (cd "$BACKUP_PATH" && sha256sum files.tar.gz database.sql.gz > SHA256SUMS &&
+        sha256sum -c SHA256SUMS >/dev/null) || die 'Backup verification failed'
+    printf 'Operation=%s\nDatabase=%s\nSource=%s\nCreated=%s\n' \
+        "$operation" "$DB_NAME" "$INSTALL_DIR" "$stamp" > "$BACKUP_PATH/manifest.txt"
+    chmod 600 "$BACKUP_PATH"
 main() {
     if [[ "$MODE" != install ]]; then
         lifecycle_main
