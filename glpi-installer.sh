@@ -38,7 +38,10 @@ PKG_MANAGER=
 LOG_FILE=
 TMP_DIR=
 
-say() { printf '[%s] %s\n' "$1" "$2"; }
+say() {
+    printf '[%s] %s\n' "$1" "$2"
+    [[ -z "$LOG_FILE" ]] || printf '[%s] %s\n' "$1" "$2" >> "$LOG_FILE"
+}
 info() { say INFO "$*"; }
 warn() { say WARN "$*" >&2; }
 die() { say ERROR "$*" >&2; exit 1; }
@@ -176,7 +179,7 @@ packages() {
         rhel)
             items=(httpd mariadb-server mariadb php php-cli php-fpm php-mysqlnd php-gd
                    php-mbstring php-xml php-intl php-bcmath php-opcache php-ldap
-                   ca-certificates curl tar openssl cronie)
+                   ca-certificates curl tar openssl cronie policycoreutils-python-utils)
             "$PKG_MANAGER" install -y "${items[@]}" ;;
         suse)
             items=(apache2 mariadb mariadb-client php8 php8-fpm php8-mysql php8-gd
@@ -355,7 +358,7 @@ configure_glpi() {
         case "$folder" in files) target="$DATA_DIR/files" ;; marketplace) target="$DATA_DIR/marketplace" ;; config) target="$CONFIG_DIR" ;; esac
         if [[ -d "$INSTALL_DIR/$folder" ]]; then
             cp -a "$INSTALL_DIR/$folder/." "$target/"
-            rm -rf -- "$INSTALL_DIR/$folder"
+            rm -rf -- "${INSTALL_DIR:?}/$folder"
         fi
     done
     cat > "$INSTALL_DIR/inc/downstream.php" <<'PHP'
@@ -386,6 +389,7 @@ PHP
                 semanage fcontext -a -t httpd_sys_rw_content_t "${path}(/.*)?" 2>/dev/null || true
                 restorecon -RF "$path"
             done
+            semanage fcontext -a -t httpd_var_run_t "$FPM_SOCKET" 2>/dev/null || true
         else
             die 'SELinux enforcing: install semanage/restorecon tools, then retry'
         fi
@@ -417,6 +421,9 @@ EOF
     service_action enable "$FPM_SERVICE"
     service_action restart "$FPM_SERVICE" || service_action start "$FPM_SERVICE"
     [[ -S "$FPM_SOCKET" ]] || die "PHP-FPM socket not found: $FPM_SOCKET"
+    if command -v restorecon >/dev/null && command -v getenforce >/dev/null && [[ $(getenforce) == Enforcing ]]; then
+        restorecon -v "$FPM_SOCKET"
+    fi
 }
 
 configure_apache() {
