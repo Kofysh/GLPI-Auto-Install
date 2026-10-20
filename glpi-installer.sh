@@ -177,6 +177,10 @@ packages() {
                    php-opcache ca-certificates curl tar openssl cron)
             "$PKG_MANAGER" install -y "${items[@]}" ;;
         rhel)
+            # RHEL 9 and its clones default to PHP 8.0; use the vendor's PHP 8.2 stream.
+            if [[ "$OS_ID" != fedora && "${OS_VERSION%%.*}" == 9 ]]; then
+                "$PKG_MANAGER" module enable -y php:8.2 || die 'Could not enable the PHP 8.2 AppStream module. Check repositories and existing PHP modules.'
+            fi
             items=(httpd mariadb-server mariadb php php-cli php-fpm php-mysqlnd php-gd
                    php-mbstring php-xml php-intl php-bcmath php-opcache php-ldap
                    ca-certificates curl tar openssl cronie policycoreutils-python-utils)
