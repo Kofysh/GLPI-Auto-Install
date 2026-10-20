@@ -637,7 +637,7 @@ glpi_console() {
 backup_existing() {
     local operation=$1 stamp path dump
     stamp=$(date -u +%Y%m%dT%H%M%SZ)
-    BACKUP_PATH="$BACKUP_ROOT/${operation}_${stamp}_$"
+    BACKUP_PATH="$BACKUP_ROOT/${operation}_${stamp}_${BASHPID}"
     mkdir -p "$BACKUP_PATH"
     chmod 700 "$BACKUP_ROOT" "$BACKUP_PATH"
     local -a paths=()
