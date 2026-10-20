@@ -64,6 +64,9 @@ cleanup() {
     if [[ "$MODE" == upgrade && "$MAINTENANCE_ON" == true && "$CODE_SWAPPED" == false ]]; then
         warn 'Restoring normal service after an interrupted pre-migration upgrade.'
         glpi_console maintenance:disable >/dev/null 2>&1 || true
+        if [[ -n "$BACKUP_PATH" && -d "$BACKUP_PATH/paused-cron" ]]; then
+            resume_glpi_cron || true
+        fi
     fi
     if ((status != 0)); then
         warn "The $MODE operation was interrupted; inspect the instance and backup."
@@ -287,13 +290,16 @@ check_runtime() {
     fi
     local php_version missing="" ext
     php_version=$($PHP_BIN -r 'echo PHP_VERSION;')
-    version_at_least "$php_version" 8.2.0 || die "GLPI 11 needs PHP >= 8.2. Installed: $php_version. Use a supported OS/repository."
+    local minimum_php=8.2.0
+    if [[ "$GLPI_VERSION" == 10.* ]]; then minimum_php=7.4.0; fi
+    version_at_least "$php_version" "$minimum_php" ||
+        die "GLPI $GLPI_VERSION requires PHP >= $minimum_php. Installed: $php_version."
     for ext in bcmath curl dom fileinfo filter gd intl libxml mbstring mysqli openssl session simplexml tokenizer xmlreader xmlwriter zlib; do
         "$PHP_BIN" -r "exit(extension_loaded('$ext') ? 0 : 1);" || missing="$missing $ext"
     done
     [[ -z "$missing" ]] || die "Missing PHP modules:$missing"
-    find_fpm
-    info "PHP $php_version with required extensions, FPM service $FPM_SERVICE"
+    if [[ "$MODE" == install ]]; then find_fpm; fi
+    info "PHP $php_version with required extensions"
     command -v mariadb >/dev/null || command -v mysql >/dev/null || die 'MariaDB client not found'
 }
 
@@ -741,6 +747,7 @@ upgrade_existing() {
     fi
     info "GLPI upgrade: $current_version -> $GLPI_VERSION"
     check_runtime
+    check_database_version
     download_upgrade_release
     if [[ "$YES" == false ]]; then
         printf 'Upgrade GLPI to %s after verified backup? [y/N] ' "$GLPI_VERSION"
@@ -757,6 +764,9 @@ upgrade_existing() {
     CODE_SWAPPED=true
     mv "$STAGE_DIR/glpi" "$INSTALL_DIR"
     restore_application_files
+    if command -v restorecon >/dev/null 2>&1; then
+        restorecon -RF "$INSTALL_DIR" || warn 'SELinux contexts may need manual restoration'
+    fi
     info 'Applying GLPI database schema migrations'
     if ! glpi_console db:update; then
         die "Schema migration failed. Maintenance stays on; restore SQL and code together using $BACKUP_PATH"
