@@ -28,6 +28,8 @@ La présence d'un système dans cette liste **ne signifie pas que toutes ses ver
 
 L'installateur utilise les dépôts standards de la distribution. Il n'ajoute pas de dépôts PHP non officiels et **refuse de poursuivre** si les versions obtenues ne respectent pas les prérequis.
 
+Sur les systèmes RHEL 9 et dérivés, le script active le module officiel `php:8.2` avant d'installer les paquets. Si un autre flux PHP est déjà actif ou que le dépôt AppStream requis est absent, il s'arrête plutôt que de changer silencieusement une installation en place. Sur Alpine, il faut activer le dépôt `community` correspondant à la version installée pour disposer des paquets PHP-FPM.
+
 ## Installation
 
 Télécharger et inspecter le script avant de l'exécuter :
