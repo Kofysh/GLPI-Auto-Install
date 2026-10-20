@@ -120,21 +120,21 @@ select_operation() {
     printf ' GLPI Auto-Install %s\n' "$VERSION"
     printf '%s\n' '======================================'
     printf '  1) Installer GLPI\n'
-    printf '  2) Mettre a jour GLPI\n'
-    printf '  3) Desinstaller GLPI\n'
+    printf '  2) Mettre à jour GLPI\n'
+    printf '  3) Désinstaller GLPI\n'
     printf '  0) Quitter\n\n'
 
     local choice
     while true; do
         printf 'Votre choix [0-3] : ' > /dev/tty
         if ! IFS= read -r choice < /dev/tty; then
-            die 'Aucune selection recue; operation annulee.'
+            die 'Aucune sélection reçue ; opération annulée.'
         fi
         case "$choice" in
             1) MODE=install; return 0 ;;
             2) MODE=upgrade; return 0 ;;
             3) MODE=uninstall; return 0 ;;
-            0|q|Q) info 'Operation annulee.'; exit 0 ;;
+            0|q|Q) info 'Opération annulée.'; exit 0 ;;
             *) printf 'Choix invalide. Saisissez 0, 1, 2 ou 3.\n' > /dev/tty ;;
         esac
     done
