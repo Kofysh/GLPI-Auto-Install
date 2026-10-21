@@ -1031,6 +1031,26 @@ remove_owned_integration() {
     fi
 }
 
+verify_recovery_point() {
+    local base_abs source_abs expected_db expected_path
+    base_abs=$(realpath -e "$BACKUP_ROOT") || die 'Backup root not found'
+    source_abs=$(realpath -e "$RESTORE_SOURCE") || die 'Backup path not found'
+    case "$source_abs" in "$base_abs"/*) ;; *) die 'Backup path is outside the configured backup root' ;; esac
+    [[ -d "$source_abs" && ! -L "$RESTORE_SOURCE" && $(stat -c '%u' "$source_abs") == 0 ]] ||
+        die 'Recovery directory must be root-owned and cannot be a symbolic link'
+    [[ -f "$source_abs/manifest.txt" && -f "$source_abs/SHA256SUMS" ]] ||
+        die 'Backup metadata missing'
+    (cd "$source_abs" && sha256sum -c SHA256SUMS >/dev/null) ||
+        die 'Backup checksum mismatch'
+    gzip -t "$source_abs/database.sql.gz" || die 'SQL backup cannot be read'
+    tar -tzf "$source_abs/files.tar.gz" >/dev/null || die 'File backup cannot be read'
+    expected_db=$(sed -n 's/^Database=//p' "$source_abs/manifest.txt" | head -n 1)
+    expected_path=$(sed -n 's/^Source=//p' "$source_abs/manifest.txt" | head -n 1)
+    [[ "$expected_db" == "$DB_NAME" && "$expected_path" == "$INSTALL_DIR" ]] ||
+        die 'Backup database or installation path differs from current instance'
+    info "Verified recovery point: $source_abs"
+}
+
 uninstall_existing() {
     if [[ "$PURGE_DATA" == true && "$CONFIRM_PURGE" != DELETE-GLPI-DATA ]]; then
         die 'Data removal also requires --confirm-purge DELETE-GLPI-DATA'
