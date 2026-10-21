@@ -803,7 +803,6 @@ read_credential() {
 identify_existing() {
     [[ -d "$INSTALL_DIR" && ! -L "$INSTALL_DIR" && -f "$INSTALL_DIR/bin/console" ]] ||
         die "GLPI not found at $INSTALL_DIR (bin/console missing)"
-    [[ -f "$INSTALL_DIR/inc/define.php" ]] || die 'Missing GLPI version file'
     local path
     for path in "$DATA_DIR" "$CONFIG_DIR" "$INSTALL_DIR/config" "$INSTALL_DIR/files" \
                 "$INSTALL_DIR/marketplace" "$INSTALL_DIR/plugins"; do
@@ -837,8 +836,16 @@ load_existing_database() {
 }
 
 existing_version() {
-    grep 'GLPI_VERSION' "$INSTALL_DIR/inc/define.php" |
-        grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 || true
+    local detected=""
+    if [[ -f "$INSTALL_DIR/inc/define.php" ]]; then
+        detected=$(grep 'GLPI_VERSION' "$INSTALL_DIR/inc/define.php" |
+            grep -Eo '(10|11)\.[0-9]+\.[0-9]+' | head -n 1 || true)
+    fi
+    if [[ -z "$detected" ]]; then
+        detected=$("$PHP_BIN" "$INSTALL_DIR/bin/console" --no-interaction --no-ansi --version 2>/dev/null |
+            grep -Eo '(10|11)\.[0-9]+\.[0-9]+' | head -n 1 || true)
+    fi
+    printf '%s\n' "$detected"
 }
 
 glpi_console() {
