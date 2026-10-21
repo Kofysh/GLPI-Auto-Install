@@ -307,6 +307,7 @@ done
 [[ -z "$ARCHIVE_SHA256" || "$ARCHIVE_SHA256" =~ ^[a-fA-F0-9]{64}$ ]] || die 'Expected a SHA-256 digest'
 [[ "$MODE" != restore || "$CONFIRM_RESTORE" == RESTORE-GLPI ]] ||
     die 'Restoration requires --confirm-restore RESTORE-GLPI'
+[[ "$TUNE_DB" == false || "$MODE" == install ]] || die '--tune-db requires a fresh installation'
 [[ "$ACK_PLUGIN_MIGRATION" == false || "$MODE" == upgrade ]] || die '--ack-plugin-migration requires --upgrade'
 [[ "$REQUIRE_HTTPS" == false || ( "$MODE" == install && "$SSL" == true ) ]] ||
     die '--require-https requires a fresh installation with --enable-ssl'
