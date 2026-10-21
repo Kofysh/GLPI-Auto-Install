@@ -1161,18 +1161,18 @@ uninstall_existing() {
     fi
     backup_existing uninstall
     pause_glpi_cron
-    if [[ "$PURGE_DB" == true ]]; then
-        db_cli -e "DROP DATABASE IF EXISTS \`$DB_NAME\`;" ||
-            die "Cannot drop database $DB_NAME; application unchanged"
-        db_cli -e "DROP USER IF EXISTS '$DB_USER'@'localhost';" ||
-            die "Cannot drop database user $DB_USER; application unchanged"
-        info "Removed local SQL database $DB_NAME and its dedicated user"
-    fi
     remove_owned_integration
     rm -rf -- "${INSTALL_DIR:?}"
     if [[ "$PURGE_DATA" == true ]]; then
         rm -rf -- "${DATA_DIR:?}" "${CONFIG_DIR:?}" "${GLPI_LOG_DIR:?}"
         rm -f -- "$CREDENTIALS"
+    fi
+    if [[ "$PURGE_DB" == true ]]; then
+        db_cli -e "DROP DATABASE IF EXISTS \`$DB_NAME\`;" ||
+            die "Could not remove SQL database $DB_NAME; recovery backup is $BACKUP_PATH"
+        db_cli -e "DROP USER IF EXISTS '$DB_USER'@'localhost';" ||
+            warn "SQL database removed, but user $DB_USER may still exist"
+        info "Removed local SQL database $DB_NAME"
     fi
     info 'GLPI code and managed integration files removed; Apache/PHP/MariaDB packages untouched'
     [[ "$PURGE_DATA" == true ]] || info 'Persistent data, credentials and SQL were retained'
