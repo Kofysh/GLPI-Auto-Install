@@ -1070,6 +1070,30 @@ validate_recovery_members() {
     fi
 }
 
+restore_existing() {
+    local old_code
+    verify_recovery_point
+    validate_recovery_members
+    if [[ "$YES" == false ]]; then
+        confirm_operation 'Restaurer fichiers et base SQL depuis ce point de sauvegarde ?'
+    fi
+    info 'Creating a fresh safety backup before restoration'
+    backup_existing pre_restore
+    old_code="/var/www/.glpi-before-restore-${BASHPID}"
+    glpi_console maintenance:enable || warn 'Maintenance CLI unavailable; keep users disconnected'
+    mv "$INSTALL_DIR" "$old_code"
+    if ! tar -xpzf "$RESTORE_SOURCE/files.tar.gz" -C /; then
+        die "Recovery of files failed. Previous code remains at $old_code"
+    fi
+    info 'Files restored. Applying the matching SQL database snapshot.'
+    restore_sql_snapshot "$RESTORE_SOURCE/database.sql.gz"
+    info "Recovery complete from $RESTORE_SOURCE"
+    warn "Safety backup: $BACKUP_PATH; former code: $old_code"
+    glpi_console maintenance:disable ||
+        warn 'Review GLPI maintenance status before exposing the service'
+    prune_old_backups
+}
+
 uninstall_existing() {
     if [[ "$PURGE_DATA" == true && "$CONFIRM_PURGE" != DELETE-GLPI-DATA ]]; then
         die 'Data removal also requires --confirm-purge DELETE-GLPI-DATA'
@@ -1109,12 +1133,11 @@ lifecycle_main() {
     [[ $EUID -eq 0 || "$DRY_RUN" == true ]] || die 'Run as root'
     identify_existing
     if [[ "$DRY_RUN" == true ]]; then
-        if [[ "$MODE" == uninstall ]]; then
-            info "DRY RUN: would back up GLPI and remove $INSTALL_DIR"
-            info "DRY RUN: remove persistent files: $PURGE_DATA; remove database: $PURGE_DB"
-        else
-            info "DRY RUN: would back up GLPI, install ${GLPI_VERSION:-latest}, and run db:update"
-        fi
+        case "$MODE" in
+            uninstall) info "DRY RUN: would back up GLPI and remove $INSTALL_DIR (purge data: $PURGE_DATA; SQL: $PURGE_DB)" ;;
+            upgrade) info "DRY RUN: would back up and update GLPI to ${GLPI_VERSION:-latest}" ;;
+            restore) info "DRY RUN: would verify $RESTORE_SOURCE, snapshot current GLPI and restore files/SQL" ;;
+        esac
         info 'DRY RUN: no disk, database or service changes'
         return 0
     fi
@@ -1130,7 +1153,11 @@ lifecycle_main() {
     LOG_FILE="$LOG_DIR/${MODE}_$(date -u +%Y%m%dT%H%M%SZ).log"
     touch "$LOG_FILE"
     chmod 600 "$LOG_FILE"
-    if [[ "$MODE" == upgrade ]]; then upgrade_existing; else uninstall_existing; fi
+    case "$MODE" in
+        upgrade) upgrade_existing ;;
+        uninstall) uninstall_existing ;;
+        restore) restore_existing ;;
+    esac
 }
 
 main() {
