@@ -172,8 +172,58 @@ select_operation() {
     done
 }
 
+ask_menu_input() {
+    local question=$1 var=$2 result
+    printf '%s' "$question" > /dev/tty
+    IFS= read -r result < /dev/tty || die 'Entrée interrompue.'
+    printf -v "$var" '%s' "$result"
+}
+
+menu_settings() {
+    local answer value
+    case "$MODE" in
+        install)
+            ask_menu_input 'Version GLPI (Entrée = dernière stable) : ' value
+            [[ -z "$value" ]] || GLPI_VERSION=$value
+            ask_menu_input 'Domaine DNS (Entrée = accès par IP) : ' DOMAIN
+            if [[ -n "$DOMAIN" ]]; then
+                ask_menu_input 'Activer HTTPS avec Let’s Encrypt ? [o/N] : ' answer
+                case "$answer" in
+                    o|O|oui|Oui|y|Y) SSL=true
+                        ask_menu_input 'Email pour le certificat : ' SSL_EMAIL
+                        REQUIRE_HTTPS=true ;;
+                esac
+            fi
+            ;;
+        upgrade)
+            ask_menu_input 'Version cible (Entrée = dernière stable) : ' value
+            [[ -z "$value" ]] || GLPI_VERSION=$value
+            ask_menu_input 'Autoriser une migration majeure 10 vers 11 ? [o/N] : ' answer
+            case "$answer" in o|O|oui|Oui|y|Y) ALLOW_MAJOR=true ;; esac
+            ;;
+        uninstall)
+            printf 'Par défaut la base SQL, les fichiers et la configuration sont conservés.\n'
+            ask_menu_input 'Supprimer aussi la configuration et les données ? [o/N] : ' answer
+            case "$answer" in
+                o|O|oui|Oui|y|Y)
+                    ask_menu_input 'Saisir DELETE-GLPI-DATA pour confirmer : ' CONFIRM_PURGE
+                    [[ "$CONFIRM_PURGE" == DELETE-GLPI-DATA ]] || die 'Confirmation des données incorrecte.'
+                    PURGE_DATA=true
+                    ask_menu_input 'Supprimer aussi la base SQL et son utilisateur ? [o/N] : ' answer
+                    case "$answer" in
+                        o|O|oui|Oui|y|Y)
+                            ask_menu_input 'Saisir DELETE-GLPI-DATABASE pour confirmer : ' CONFIRM_DB_PURGE
+                            [[ "$CONFIRM_DB_PURGE" == DELETE-GLPI-DATABASE ]] || die 'Confirmation SQL incorrecte.'
+                            PURGE_DB=true ;;
+                    esac ;;
+            esac
+            ;;
+    esac
+}
+
 if (($# == 0)); then
     select_operation
+    menu_settings
 fi
 
 while (($#)); do
