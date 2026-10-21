@@ -21,6 +21,7 @@ CONFIRM_DB_PURGE=
 ALLOW_MAJOR=false
 DB_NAME_EXPLICIT=false
 BACKUP_ROOT=/var/backups/glpi-installer
+LOCK_PATH=/run/lock/glpi-auto-install.lock
 BACKUP_PATH=
 MAINTENANCE_ON=false
 CODE_SWAPPED=false
