@@ -7,6 +7,13 @@ umask 027
 VERSION=5.2.0
 MODE=install
 MENU_SELECTED=false
+BACKUP_RETENTION_DAYS=0
+REQUIRE_HTTPS=false
+ARCHIVE_SHA256=
+ACK_PLUGIN_MIGRATION=false
+RESTORE_SOURCE=
+CONFIRM_RESTORE=
+FPM_CHILDREN=8
 PURGE_DATA=false
 PURGE_DB=false
 CONFIRM_PURGE=
@@ -89,6 +96,13 @@ Usage: sudo bash glpi-installer.sh [options]
   -d, --dry-run             Detect platform and show planned actions (no writes)
   --upgrade, --update       Back up and update an existing GLPI installation
   --allow-major-upgrade     Allow GLPI 10 -> 11 migration after plugin review
+  --ack-plugin-migration    Confirm GLPI 10 plugins were reviewed
+  --restore PATH            Restore an installer-managed backup
+  --confirm-restore TOKEN   Confirm a restore using RESTORE-GLPI
+  --backup-dir PATH         Directory for local recovery archives
+  --retention-days N        Prune old archives after success (1-365; opt-in)
+  --require-https           Require successful automatic HTTPS
+  --archive-sha256 HASH     Check an official release archive digest
   --uninstall               Back up and remove GLPI application code
   --purge-data              Also remove GLPI data and configuration
   --purge-db                Also remove local GLPI database/user
