@@ -4,7 +4,7 @@
 set -Eeuo pipefail
 umask 027
 
-VERSION=5.1.1
+VERSION=5.2.0
 MODE=install
 MENU_SELECTED=false
 PURGE_DATA=false
