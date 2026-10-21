@@ -628,7 +628,26 @@ PHP
     fi
 }
 
+memory_limit_mb() {
+    local installed_bytes limit_bytes
+    installed_bytes=$(awk '/MemTotal:/ {printf "%.0f", $2 * 1024}' /proc/meminfo)
+    limit_bytes=$installed_bytes
+    if [[ -r /sys/fs/cgroup/memory.max ]]; then
+        local cgroup
+        cgroup=$(cat /sys/fs/cgroup/memory.max)
+        if [[ "$cgroup" =~ ^[0-9]+$ ]] && ((cgroup < limit_bytes)); then limit_bytes=$cgroup; fi
+    fi
+    printf '%s\n' "$((limit_bytes / 1024 / 1024))"
+}
+
 configure_fpm() {
+    local memory_mb
+    memory_mb=$(memory_limit_mb)
+    # Reserve room for MariaDB, Apache and the OS; budget about 180 MiB per child.
+    FPM_CHILDREN=$(((memory_mb - 512) / 180))
+    ((FPM_CHILDREN >= 2)) || FPM_CHILDREN=2
+    ((FPM_CHILDREN <= 16)) || FPM_CHILDREN=16
+    info "PHP-FPM concurrency: $FPM_CHILDREN workers based on ${memory_mb} MiB"
     mkdir -p "$FPM_POOL_DIR" "$(dirname "$FPM_SOCKET")"
     cat > "$FPM_POOL_DIR/glpi.conf" <<EOF
 [glpi]
@@ -638,16 +657,18 @@ listen = $FPM_SOCKET
 listen.owner = $WEB_USER
 listen.group = $WEB_GROUP
 listen.mode = 0660
-pm = dynamic
-pm.max_children = 8
-pm.start_servers = 2
-pm.min_spare_servers = 1
-pm.max_spare_servers = 3
+pm = ondemand
+pm.max_children = $FPM_CHILDREN
+pm.process_idle_timeout = 15s
+pm.max_requests = 500
+php_admin_value[opcache.memory_consumption] = 128
+php_admin_value[opcache.interned_strings_buffer] = 16
 php_admin_value[memory_limit] = 256M
 php_admin_value[upload_max_filesize] = 64M
 php_admin_value[post_max_size] = 70M
 php_admin_value[max_execution_time] = 300
 php_admin_value[date.timezone] = $TIMEZONE
+php_admin_value[max_input_vars] = 5000
 php_admin_flag[session.cookie_httponly] = on
 EOF
     service_action enable "$FPM_SERVICE"
