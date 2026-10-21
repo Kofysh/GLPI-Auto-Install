@@ -20,7 +20,7 @@ jobs:
         run: |
           sudo bash glpi-installer.sh --yes --glpi-version 11.0.9 --domain localhost
           test -f /var/www/glpi/bin/console
-          test -f /root/.glpi_credentials
+          sudo test -f /root/.glpi_credentials
           sudo test -S /run/php/glpi-fpm.sock
           curl --fail --location --max-time 15 -o /dev/null http://127.0.0.1/
       - name: Back up and uninstall while retaining SQL and data
