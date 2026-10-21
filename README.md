@@ -2,7 +2,7 @@
 
 Installateur Bash pour déployer **GLPI sur un serveur Linux dédié, une machine virtuelle KVM ou un conteneur LXC**. Il prépare Apache, PHP-FPM, MariaDB, la structure de fichiers GLPI et les tâches planifiées. La configuration initiale de GLPI et la création des comptes restent à terminer dans l'assistant Web.
 
-> **Version 5.1.1 :** installation neuve, mise à jour et désinstallation contrôlée. Les opérations sur une ancienne installation réalisent une sauvegarde des fichiers et de la base SQL avant toute modification. Une désinstallation simple conserve les données. Les paquets partagés Apache, PHP et MariaDB ne sont jamais purgés.
+> **Version 5.2.0 :** installation neuve, mise à jour et désinstallation contrôlée. Les opérations sur une ancienne installation réalisent une sauvegarde des fichiers et de la base SQL avant toute modification. Une désinstallation simple conserve les données. Les paquets partagés Apache, PHP et MariaDB ne sont jamais purgés.
 
 ## Plateformes
 
@@ -41,17 +41,18 @@ sudo bash glpi-installer.sh
 ```
 
 ```text
-GLPI Auto-Install 5.1.1
+GLPI Auto-Install 5.2.0
 
   1) Installer GLPI
   2) Mettre à jour GLPI
   3) Désinstaller GLPI
+  4) Restaurer une sauvegarde
   0) Quitter
 
-Votre choix [0-3] :
+Votre choix [0-4] :
 ```
 
-La sélection ouvre le parcours d'installation, de mise à jour ou de désinstallation, avec les confirmations existantes. Une saisie incorrecte affiche à nouveau l'invite. Le choix `0` quitte sans effectuer de modification. Les appels avec arguments (par exemple `--upgrade`, `--uninstall` et `--yes`) passent directement au mode indiqué. Un terminal interactif est nécessaire pour le menu ; un lancement sans argument depuis un processus non interactif échoue sans lancer d'installation.
+La sélection ouvre le parcours d'installation, de mise à jour, de désinstallation ou de restauration. Le script demande ensuite la version cible, le domaine, le choix HTTPS ou les options de conservation/suppression des données selon l'opération. Une saisie incorrecte affiche à nouveau l'invite. Le choix `0` quitte sans effectuer de modification. Les appels avec arguments (par exemple `--upgrade`, `--uninstall` et `--yes`) passent directement au mode indiqué. Un terminal interactif est nécessaire pour le menu ; un lancement sans argument depuis un processus non interactif échoue sans lancer d'installation.
 
 
 Télécharger et inspecter le script avant de l'exécuter :
@@ -104,6 +105,12 @@ Sans variable de configuration, un mot de passe aléatoire est généré. Le fic
 | `--timezone` | Fuseau horaire PHP (défaut `Europe/Paris`) |
 | `--domain` | Nom d'hôte Apache |
 | `--enable-ssl`, `--ssl-email` | Certificat Let's Encrypt (prise en charge automatique sur Debian/RHEL) |
+| `--backup-dir CHEMIN` | Destination des sauvegardes (hors du répertoire Web) |
+| `--retention-days N` | Nettoyage volontaire des anciennes sauvegardes après succès (0 par défaut, aucun nettoyage) |
+| `--restore CHEMIN`, `--confirm-restore RESTORE-GLPI` | Restauration explicite des fichiers et de la base SQL depuis une archive vérifiée |
+| `--archive-sha256 EMPREINTE` | Vérifie l'empreinte SHA-256 de l'archive officielle GLPI avant extraction |
+| `--require-https` | Bloque la fin de l'installation si la mise en place TLS automatique échoue |
+| `--ack-plugin-migration` | Atteste de la préparation des plugins sensibles lors du passage à GLPI 11 |
 | `--help`, `--version` | Aide et numéro de version |
 
 Les anciens raccourcis dangereux `--force`, `--skip-checks`, `--no-rollback`, `--keep-db`, `--keep-packages` restent indisponibles.
@@ -162,6 +169,30 @@ Les sauvegardes sont enregistrées dans `/var/backups/glpi-installer/<opération
 
 Les archives sont privées (répertoire en mode `0700`) et **ne sont pas automatiquement effacées**. La présence d'empreintes valides ne garantit pas, à elle seule, la restaurabilité : tester périodiquement une restauration sur une VM de préproduction.
 
+### Restauration depuis une sauvegarde
+
+Une sauvegarde du script inclut les fichiers GLPI et un export SQL pouvant recréer la base (archives créées par la version 5.2 ou ultérieure). Avant de restaurer, le script vérifie l'emplacement de la sauvegarde, son propriétaire, les empreintes et son manifeste, puis enregistre un nouveau point de récupération `pre_restore`.
+
+```bash
+sudo bash glpi-installer.sh --restore \
+  /var/backups/glpi-installer/upgrade_20261021T120000Z_1234 \
+  --confirm-restore RESTORE-GLPI
+```
+
+**Attention :** la restauration importe le dump SQL et peut remplacer le contenu de la base existante. Elle nécessite une fenêtre de maintenance et doit être testée sur une VM/LXC de préproduction. Les installations avec base distante ou chemins personnalisés exigent une procédure manuelle. Pour les archives plus anciennes ne contenant pas d'instructions de recréation de la base, la récupération SQL doit être préparée manuellement. Les plugins contenant des liens symboliques peuvent également nécessiter une restauration manuelle.
+
+Les paramètres `--backup-dir` et `--retention-days` facilitent la gestion des sauvegardes, mais une copie externe et un test périodique de restauration restent indispensables. Le dossier de sauvegarde ne doit jamais être accessible via HTTP.
+
+### Protection des migrations GLPI 10 vers 11
+
+Avant d'autoriser la migration, le script recherche les répertoires des plugins `formcreator`, `genericobject` et `fields`. Leur présence impose un accusé de préparation de migration en mode interactif ou le paramètre `--ack-plugin-migration` en ligne de commande. Cela n'exécute pas automatiquement les migrations spécifiques : suivre la [procédure officielle des plugins GLPI 11](https://help.glpi-project.org/tutorials/fr/procedures/migrate-of-specific-plugins-from-glpi-10-to-glpi-11) dans l'ordre recommandé.
+
+### Configuration des ressources et sécurité
+
+Pour les nouvelles installations, PHP-FPM adapte son nombre maximal de workers à la RAM disponible, en tenant compte de la limite cgroup des LXC, et dispose de paramètres OPcache dédiés. MariaDB reste configuré par les paquets du système afin de ne pas redimensionner ou perturber un service SQL partagé.
+
+L'option `--require-https`, combinée à `--enable-ssl`, empêche de considérer comme terminée une installation lorsque Certbot échoue. Le script ne gère pas automatiquement les certificats d'un reverse proxy externe. Par défaut, les téléchargements GLPI sont protégés par HTTPS ; pour une validation d'intégrité renforcée, fournir une empreinte de confiance avec `--archive-sha256`.
+
 ## Après l'installation
 
 1. Ouvrir le site GLPI, compléter l'assistant de connexion et d'initialisation de la base.
@@ -186,9 +217,10 @@ Les archives sont privées (répertoire en mode `0700`) et **ne sont pas automat
 - Seul le chemin local `/var/www/glpi` est reconnu pour les anciennes installations ; les instances personnalisées nécessitent une reprise manuelle.
 - Les versions anciennes de PHP/MariaDB doivent être mises à niveau séparément avant de cibler GLPI 11.
 - La sauvegarde avant migration/désinstallation est obligatoire, mais ne remplace pas une politique de sauvegarde externalisée.
-- Aucune restauration SQL automatique n'est lancée sur un schéma partiellement migré.
+- Une restauration de base de données est disponible sur demande explicite, mais elle nécessite une fenêtre de maintenance et un test préalable. Les anciennes archives non conçues pour recréer la base peuvent nécessiter une reprise manuelle.
 - Les règles de pare-feu et les reverse proxies ne sont pas modifiés.
 - L'intégration SELinux, SUSE et Alpine doit être validée en préproduction.
+- Les contrôles GitHub Actions restent principalement statiques et simulés ; ils ne certifient pas une migration GLPI complète ni un fonctionnement en environnement LXC/KVM réel.
 - Le mode `--dry-run` ne valide pas les droits effectifs des services ni toutes les dépendances.
 
 Se référer aux procédures officielles : [mise à jour GLPI](https://glpi-install.readthedocs.io/en/latest/update.html), [CLI de maintenance](https://glpi-install.readthedocs.io/en/latest/command-line.html) et [migration des plugins GLPI 10 → 11](https://help.glpi-project.org/tutorials/fr/procedures/migrate-of-specific-plugins-from-glpi-10-to-glpi-11).
