@@ -813,12 +813,54 @@ glpi_console() {
     fi
 }
 
+acquire_lock() {
+    command -v flock >/dev/null 2>&1 || die 'The flock utility is required to prevent concurrent operations'
+    mkdir -p "$(dirname "$LOCK_PATH")"
+    exec 9>"$LOCK_PATH"
+    flock -n 9 || die 'Another GLPI operation is already in progress'
+}
+
+check_backup_storage() {
+    local files_kb db_kb available_kb needed_kb
+    local -a dirs=()
+    local path
+    for path in "$INSTALL_DIR" "$DATA_DIR" "$CONFIG_DIR" "$GLPI_LOG_DIR"; do
+        [[ ! -d "$path" ]] || dirs+=("$path")
+    done
+    files_kb=$(du -sk "${dirs[@]}" | awk '{total += $1} END {printf "%.0f", total}')
+    db_kb=$(db_cli --batch --skip-column-names -e "SELECT COALESCE(ROUND(SUM(data_length + index_length)/1024),0) FROM information_schema.tables WHERE table_schema='$DB_NAME'") ||
+        die 'Unable to estimate SQL backup size'
+    [[ "$db_kb" =~ ^[0-9]+$ ]] || die 'Unable to estimate SQL backup size'
+    available_kb=$(df -Pk "$BACKUP_ROOT" | awk 'NR==2{print $4}')
+    # Conservative bound: room for an uncompressed file copy + SQL and 512 MiB spare.
+    needed_kb=$((files_kb + db_kb + 524288))
+    ((available_kb >= needed_kb)) ||
+        die "Insufficient backup space: need about $((needed_kb / 1024)) MiB, available $((available_kb / 1024)) MiB"
+}
+
+prune_old_backups() {
+    ((BACKUP_RETENTION_DAYS > 0)) || return 0
+    local path name
+    while IFS= read -r -d '' path; do
+        name=${path##*/}
+        case "$name" in
+            upgrade_*|uninstall_*|pre_restore_*|restore_*)
+                [[ "$path" != "$BACKUP_PATH" && ! -L "$path" ]] || continue
+                rm -rf -- "$path" || warn "Could not prune old backup: $path" ;;
+        esac
+    done < <(find "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d -mtime "+$BACKUP_RETENTION_DAYS" -print0)
+}
+
 backup_existing() {
     local operation=$1 stamp path dump
     stamp=$(date -u +%Y%m%dT%H%M%SZ)
     BACKUP_PATH="$BACKUP_ROOT/${operation}_${stamp}_${BASHPID}"
+    mkdir -p "$BACKUP_ROOT"
+    [[ ! -L "$BACKUP_ROOT" ]] || die 'Backup directory must not be a symlink'
+    chmod 700 "$BACKUP_ROOT"
+    check_backup_storage
     mkdir -p "$BACKUP_PATH"
-    chmod 700 "$BACKUP_ROOT" "$BACKUP_PATH"
+    chmod 700 "$BACKUP_PATH"
     local -a paths=()
     for path in "$INSTALL_DIR" "$DATA_DIR" "$CONFIG_DIR" "$GLPI_LOG_DIR" "$CREDENTIALS" \
                 "$APACHE_CONF" /etc/apache2/sites-available/glpi.conf \
@@ -837,6 +879,7 @@ backup_existing() {
         die 'SQL backup failed; installation was not modified'
     [[ -s "$BACKUP_PATH/database.sql.gz" ]] || die 'Empty SQL backup'
     gzip -t "$BACKUP_PATH/database.sql.gz" || die 'Corrupted SQL backup'
+    tar -tzf "$BACKUP_PATH/files.tar.gz" >/dev/null || die 'File backup cannot be read'
     (cd "$BACKUP_PATH" && sha256sum files.tar.gz database.sql.gz > SHA256SUMS &&
         sha256sum -c SHA256SUMS >/dev/null) || die 'Backup verification failed'
     printf 'Operation=%s\nDatabase=%s\nSource=%s\nCreated=%s\n' \
@@ -923,8 +966,8 @@ upgrade_existing() {
     fi
     glpi_console maintenance:enable || die 'Could not enable GLPI maintenance'
     MAINTENANCE_ON=true
-    backup_existing upgrade
     pause_glpi_cron
+    backup_existing upgrade
     OLD_CODE_DIR="/var/www/.glpi-previous-${BASHPID}-$(date +%s)"
     mv "$INSTALL_DIR" "$OLD_CODE_DIR"
     chmod 700 "$OLD_CODE_DIR"
@@ -947,6 +990,7 @@ upgrade_existing() {
     OLD_CODE_DIR=
     info "GLPI $GLPI_VERSION successfully installed"
     info "Restore point: $BACKUP_PATH"
+    prune_old_backups
     warn 'Review plugin compatibility. GLPI 11 may require manual plugin migrations.'
 }
 
@@ -1018,6 +1062,7 @@ uninstall_existing() {
     info 'GLPI code and managed integration files removed; Apache/PHP/MariaDB packages untouched'
     [[ "$PURGE_DATA" == true ]] || info 'Persistent data, credentials and SQL were retained'
     info "Verified recovery archive: $BACKUP_PATH"
+    prune_old_backups
 }
 
 lifecycle_main() {
@@ -1041,6 +1086,7 @@ lifecycle_main() {
     [[ -t 0 || "$YES" == true || "$MENU_SELECTED" == true ]] ||
         die 'Noninteractive operation requires --yes'
     load_existing_database
+    acquire_lock
     mkdir -p "$LOG_DIR"
     LOG_FILE="$LOG_DIR/${MODE}_$(date -u +%Y%m%dT%H%M%SZ).log"
     touch "$LOG_FILE"
@@ -1055,6 +1101,7 @@ main() {
     fi
     platform
     preflight
+    acquire_lock
     mkdir -p "$LOG_DIR"
     LOG_FILE="$LOG_DIR/install_$(date +%Y%m%d_%H%M%S).log"
     touch "$LOG_FILE"; chmod 600 "$LOG_FILE"
