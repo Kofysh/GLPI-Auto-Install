@@ -597,6 +597,27 @@ verify_release_archive() {
     fi
 }
 
+configure_db_tuning() {
+    [[ "$TUNE_DB" == true ]] || return 0
+    [[ "$DB_SERVICE" == mariadb ]] || die '--tune-db requires a MariaDB host'
+    local ram_mb buffer_mb conf
+    ram_mb=$(memory_limit_mb)
+    buffer_mb=$((ram_mb / 6))
+    ((buffer_mb >= 128)) || buffer_mb=128
+    ((buffer_mb <= 2048)) || buffer_mb=2048
+    if [[ "$OS_FAMILY" == debian ]]; then
+        conf=/etc/mysql/mariadb.conf.d/60-glpi-auto-install.cnf
+    else
+        conf=/etc/my.cnf.d/60-glpi-auto-install.cnf
+    fi
+    mkdir -p "$(dirname "$conf")"
+    [[ ! -e "$conf" ]] || die "MariaDB configuration exists: $conf"
+    printf '[mysqld]\ninnodb_buffer_pool_size = %sM\nmax_connections = 100\n'         "$buffer_mb" > "$conf"
+    info "Dedicated MariaDB buffer pool: ${buffer_mb} MiB"
+    service_action restart "$DB_SERVICE"
+    check_database_version
+}
+
 download_glpi() {
     TMP_DIR=$(mktemp -d)
     local archive="$TMP_DIR/glpi.tgz"
