@@ -388,9 +388,15 @@ packages() {
         debian)
             export DEBIAN_FRONTEND=noninteractive
             "$PKG_MANAGER" update -qq
-            items=(apache2 mariadb-server mariadb-client php-cli php-fpm php-mysql php-gd
+            items=(apache2 php-cli php-fpm php-mysql php-gd
                    php-curl php-mbstring php-xml php-intl php-bcmath php-zip php-ldap
                    php-opcache ca-certificates curl tar openssl cron)
+            if command -v mysqld >/dev/null 2>&1 && ! command -v mariadbd >/dev/null 2>&1; then
+                DB_SERVICE=mysql
+                info 'Existing MySQL server detected; preserving it instead of installing MariaDB'
+            else
+                items+=(mariadb-server mariadb-client)
+            fi
             "$PKG_MANAGER" install -y "${items[@]}" ;;
         rhel)
             # RHEL 9 and its clones default to PHP 8.0; use the vendor's PHP 8.2 stream.
