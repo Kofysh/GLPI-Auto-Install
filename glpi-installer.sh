@@ -1070,6 +1070,15 @@ validate_recovery_members() {
     fi
 }
 
+restore_sql_snapshot() {
+    local dump=$1
+    gzip -t "$dump" || die 'SQL recovery archive is corrupted'
+    info 'Importing the paired SQL snapshot. Database writes must remain stopped.'
+    if ! gzip -dc "$dump" | db_cli; then
+        die "SQL import failed. Keep GLPI offline and recover from $BACKUP_PATH"
+    fi
+}
+
 restore_existing() {
     local old_code
     verify_recovery_point
