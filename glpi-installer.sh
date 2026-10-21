@@ -25,6 +25,7 @@ LOCK_PATH=/run/lock/glpi-auto-install.lock
 BACKUP_PATH=
 MAINTENANCE_ON=false
 CODE_SWAPPED=false
+DB_MIGRATION_STARTED=false
 OLD_CODE_DIR=
 STAGE_DIR=
 INSTALL_DIR=/var/www/glpi
@@ -72,6 +73,15 @@ cleanup() {
     [[ -z "$TMP_DIR" ]] || rm -rf -- "$TMP_DIR"
     if [[ -n "$STAGE_DIR" && "$STAGE_DIR" == /var/www/.glpi-stage.* && -d "$STAGE_DIR" ]]; then
         rm -rf -- "$STAGE_DIR"
+    fi
+    if [[ "$MODE" == upgrade && "$CODE_SWAPPED" == true && "$DB_MIGRATION_STARTED" == false &&
+          -d "$OLD_CODE_DIR" ]]; then
+        warn 'New GLPI files could not be prepared. Restoring the previous application code.'
+        [[ ! -e "$INSTALL_DIR" ]] || mv "$INSTALL_DIR" "${INSTALL_DIR}.failed-${BASHPID}"
+        mv "$OLD_CODE_DIR" "$INSTALL_DIR" || warn 'Manual file recovery is required'
+        resume_glpi_cron || true
+        glpi_console maintenance:disable >/dev/null 2>&1 || true
+        MAINTENANCE_ON=false
     fi
     if [[ "$MODE" == upgrade && "$MAINTENANCE_ON" == true && "$CODE_SWAPPED" == false ]]; then
         warn 'Restoring normal service after an interrupted pre-migration upgrade.'
@@ -1029,6 +1039,7 @@ upgrade_existing() {
         restorecon -RF "$INSTALL_DIR" || warn 'SELinux contexts may need manual restoration'
     fi
     info 'Applying GLPI database schema migrations'
+    DB_MIGRATION_STARTED=true
     if ! glpi_console db:update; then
         die "Schema migration failed. Maintenance stays on; restore SQL and code together using $BACKUP_PATH"
     fi
