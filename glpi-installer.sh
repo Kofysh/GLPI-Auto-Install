@@ -549,15 +549,34 @@ SQL
     info "Created new database $DB_NAME with dedicated user"
 }
 
+verify_release_archive() {
+    local archive=$1
+    if [[ -n "$ARCHIVE_SHA256" ]]; then
+        local measured
+        measured=$(sha256sum "$archive" | awk '{print $1}')
+        [[ "${measured,,}" == "${ARCHIVE_SHA256,,}" ]] ||
+            die 'GLPI release digest differs from the expected SHA-256; refusing extraction'
+        info 'Official release archive SHA-256 verified'
+    else
+        warn 'Release fetched over HTTPS, but no pinned SHA-256 was provided'
+    fi
+    local entries
+    entries=$(tar -tzf "$archive") || die 'Invalid GLPI release archive'
+    if grep -E -v '^glpi(/|$)' <<< "$entries" | grep -q .; then
+        die 'Unexpected path outside the GLPI archive root'
+    fi
+    if grep -Eq '(^/|(^|/)\.\.(/|$))' <<< "$entries"; then
+        die 'Unsafe GLPI archive member path'
+    fi
+}
+
 download_glpi() {
     TMP_DIR=$(mktemp -d)
     local archive="$TMP_DIR/glpi.tgz"
     local url="https://github.com/glpi-project/glpi/releases/download/$GLPI_VERSION/glpi-$GLPI_VERSION.tgz"
     curl --fail --location --retry 3 --show-error --silent --proto '=https' --tlsv1.2 \
         "$url" -o "$archive" || die 'Failed to download official GLPI release archive'
-    tar -tzf "$archive" >"$TMP_DIR/list" || die 'Invalid release archive'
-    grep -q '^glpi/' "$TMP_DIR/list" || die 'Release archive has no glpi/ root folder'
-    if grep -Eq '(^/|(^|/)\.\.(/|$))' "$TMP_DIR/list"; then die 'Unsafe release archive member path'; fi
+    verify_release_archive "$archive"
     mkdir -p /var/www
     tar -xzf "$archive" --no-same-owner -C /var/www
     [[ -f "$INSTALL_DIR/bin/console" && -d "$INSTALL_DIR/public" ]] || die 'Extracted GLPI layout not recognized'
@@ -706,14 +725,18 @@ EOF
 configure_tls() {
     "$SSL" || return 0
     if [[ "$OS_FAMILY" == debian ]]; then
-        apt-get install -y certbot python3-certbot-apache || { warn 'Certbot packages unavailable; set up TLS manually'; return 0; }
+        apt-get install -y certbot python3-certbot-apache || { if [[ "$REQUIRE_HTTPS" == true ]]; then die 'Certbot is required but unavailable'; fi; warn 'Certbot packages unavailable'; return 0; }
     elif [[ "$OS_FAMILY" == rhel ]]; then
         dnf install -y certbot python3-certbot-apache || { warn 'Certbot packages unavailable; set up TLS manually'; return 0; }
     else
+        if [[ "$REQUIRE_HTTPS" == true ]]; then die 'Automatic HTTPS is unavailable on this platform'; fi
         warn 'Automatic TLS is not available on this family; configure HTTPS with your reverse proxy or Certbot'
         return
     fi
     if ! certbot --apache --non-interactive --agree-tos --redirect -d "$DOMAIN" -m "$SSL_EMAIL"; then
+        if [[ "$REQUIRE_HTTPS" == true ]]; then
+            die 'TLS is required but certificate issuance failed. Do not expose this site until HTTPS works.'
+        fi
         warn 'Certbot failed. HTTP is still available; configure TLS before exposing GLPI publicly.'
     fi
 }
@@ -848,11 +871,7 @@ download_upgrade_release() {
     local url="https://github.com/glpi-project/glpi/releases/download/$GLPI_VERSION/glpi-$GLPI_VERSION.tgz"
     curl --fail --location --retry 3 --show-error --silent --proto '=https' --tlsv1.2 \
         "$url" -o "$STAGE_DIR/release.tgz" || die 'Could not download official release'
-    tar -tzf "$STAGE_DIR/release.tgz" > "$STAGE_DIR/members" || die 'Invalid release archive'
-    grep -q '^glpi/' "$STAGE_DIR/members" || die 'Missing glpi root in archive'
-    if grep -Eq '(^/|(^|/)\.\.(/|$))' "$STAGE_DIR/members"; then
-        die 'Unsafe archive member path'
-    fi
+    verify_release_archive "$STAGE_DIR/release.tgz"
     tar -xzf "$STAGE_DIR/release.tgz" --no-same-owner -C "$STAGE_DIR"
     [[ -f "$STAGE_DIR/glpi/bin/console" && -d "$STAGE_DIR/glpi/public" ]] ||
         die 'Incomplete release archive'
