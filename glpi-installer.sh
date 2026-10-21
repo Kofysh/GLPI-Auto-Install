@@ -300,7 +300,18 @@ if "$SSL"; then
     [[ -n "$DOMAIN" && -n "$SSL_EMAIL" ]] || die 'SSL requires --domain and --ssl-email'
 fi
 
-version_at_least() { [[ "$(printf '%s\n' "$1" "$2" | sort -V | head -n 1)" == "$2" ]]; }
+version_at_least() {
+    # BusyBox sort on Alpine has no portable version-sort option.
+    awk -v actual="$1" -v required="$2" 'BEGIN {
+        split(actual, a, "."); split(required, b, ".");
+        for (i = 1; i <= 4; i++) {
+            x = a[i] + 0; y = b[i] + 0;
+            if (x > y) exit 0;
+            if (x < y) exit 1;
+        }
+        exit 0
+    }'
+}
 
 platform() {
     [[ -r /etc/os-release ]] || die 'Cannot read /etc/os-release'
