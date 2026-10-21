@@ -110,6 +110,7 @@ Sans variable de configuration, un mot de passe aléatoire est généré. Le fic
 | `--restore CHEMIN`, `--confirm-restore RESTORE-GLPI` | Restauration explicite des fichiers et de la base SQL depuis une archive vérifiée |
 | `--archive-sha256 EMPREINTE` | Vérifie l'empreinte SHA-256 de l'archive officielle GLPI avant extraction |
 | `--require-https` | Bloque la fin de l'installation si la mise en place TLS automatique échoue |
+| `--tune-db` | Optimise la mémoire MariaDB d'une installation neuve, uniquement sur un hôte SQL dédié |
 | `--ack-plugin-migration` | Atteste de la préparation des plugins sensibles lors du passage à GLPI 11 |
 | `--help`, `--version` | Aide et numéro de version |
 
@@ -189,7 +190,7 @@ Avant d'autoriser la migration, le script recherche les répertoires des plugins
 
 ### Configuration des ressources et sécurité
 
-Pour les nouvelles installations, PHP-FPM adapte son nombre maximal de workers à la RAM disponible, en tenant compte de la limite cgroup des LXC, et dispose de paramètres OPcache dédiés. MariaDB reste configuré par les paquets du système afin de ne pas redimensionner ou perturber un service SQL partagé.
+Pour les nouvelles installations, PHP-FPM adapte son nombre maximal de workers à la RAM disponible, en tenant compte de la limite cgroup des LXC, et dispose de paramètres OPcache dédiés. MariaDB conserve ses réglages système par défaut. Sur une VM/LXC dédiée exclusivement à GLPI, `--tune-db` permet de dimensionner explicitement le buffer InnoDB d'après la RAM, avec un redémarrage du service. Ne pas activer ce réglage sur un serveur SQL mutualisé. Lorsqu'un serveur MySQL est déjà installé, le script le conserve au lieu de forcer son remplacement par MariaDB.
 
 L'option `--require-https`, combinée à `--enable-ssl`, empêche de considérer comme terminée une installation lorsque Certbot échoue. Le script ne gère pas automatiquement les certificats d'un reverse proxy externe. Par défaut, les téléchargements GLPI sont protégés par HTTPS ; pour une validation d'intégrité renforcée, fournir une empreinte de confiance avec `--archive-sha256`.
 
