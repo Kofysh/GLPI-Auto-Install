@@ -6,6 +6,7 @@ on:
       - 'glpi-installer.sh'
       - 'tests/lifecycle-dry-run.sh'
       - 'tests/interactive-menu.sh'
+      - 'tests/safety-regressions.sh'
       - '.github/workflows/installer-checks.yml'
   pull_request:
     paths:
@@ -23,7 +24,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y shellcheck
-          shellcheck -S warning glpi-installer.sh tests/lifecycle-dry-run.sh tests/interactive-menu.sh
+          shellcheck -S warning glpi-installer.sh tests/lifecycle-dry-run.sh tests/interactive-menu.sh tests/safety-regressions.sh
       - name: Read-only smoke test
         run: |
           bash glpi-installer.sh --version
@@ -33,6 +34,8 @@ jobs:
         run: bash tests/lifecycle-dry-run.sh
       - name: Interactive menu tests
         run: bash tests/interactive-menu.sh
+      - name: Backup and safety regression tests
+        run: bash tests/safety-regressions.sh
       - name: Reject invalid arguments
         run: |
           if bash glpi-installer.sh --db-name 'bad-name' --dry-run; then
