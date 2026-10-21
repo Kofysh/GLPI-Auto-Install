@@ -184,6 +184,18 @@ while (($#)); do
         --upgrade|--update) [[ "$MODE" == install ]] || die 'Choose one operation'; MODE=upgrade; shift ;;
         --uninstall) [[ "$MODE" == install ]] || die 'Choose one operation'; MODE=uninstall; shift ;;
         --allow-major-upgrade) ALLOW_MAJOR=true; shift ;;
+        --ack-plugin-migration) ACK_PLUGIN_MIGRATION=true; shift ;;
+        --require-https) REQUIRE_HTTPS=true; shift ;;
+        --restore|--confirm-restore|--backup-dir|--retention-days|--archive-sha256)
+            (($# >= 2)) || die "Missing value for $1"
+            case "$1" in
+                --restore) [[ "$MODE" == install ]] || die 'Choose only one operation'; MODE=restore; RESTORE_SOURCE=$2 ;;
+                --confirm-restore) CONFIRM_RESTORE=$2 ;;
+                --backup-dir) BACKUP_ROOT=$2 ;;
+                --retention-days) BACKUP_RETENTION_DAYS=$2 ;;
+                --archive-sha256) ARCHIVE_SHA256=$2 ;;
+            esac
+            shift 2 ;;
         --purge-data) PURGE_DATA=true; shift ;;
         --purge-db) PURGE_DB=true; shift ;;
         --confirm-purge|--confirm-db-purge)
@@ -217,6 +229,16 @@ done
 [[ "$TIMEZONE" =~ ^[A-Za-z_]+(/[A-Za-z0-9_+-]+)*$ ]] || die 'Invalid timezone'
 [[ -z "$DOMAIN" || "$DOMAIN" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] || die 'Invalid domain'
 [[ -z "$SSL_EMAIL" || "$SSL_EMAIL" =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]] || die 'Invalid SSL email'
+[[ "$BACKUP_ROOT" == /* && "$BACKUP_ROOT" != / && "$BACKUP_ROOT" != /var && "$BACKUP_ROOT" != /var/www* ]] ||
+    die 'Backups must use an absolute directory outside /var/www'
+[[ "$BACKUP_RETENTION_DAYS" =~ ^[0-9]+$ ]] && (( BACKUP_RETENTION_DAYS <= 365 )) ||
+    die 'Retention must be a number from 0 (disabled) to 365'
+[[ -z "$ARCHIVE_SHA256" || "$ARCHIVE_SHA256" =~ ^[a-fA-F0-9]{64}$ ]] || die 'Expected a SHA-256 digest'
+[[ "$MODE" != restore || "$CONFIRM_RESTORE" == RESTORE-GLPI ]] ||
+    die 'Restoration requires --confirm-restore RESTORE-GLPI'
+[[ "$ACK_PLUGIN_MIGRATION" == false || "$MODE" == upgrade ]] || die '--ack-plugin-migration requires --upgrade'
+[[ "$REQUIRE_HTTPS" == false || ( "$MODE" == install && "$SSL" == true ) ]] ||
+    die '--require-https requires a fresh installation with --enable-ssl'
 [[ "$PURGE_DB" == false || "$PURGE_DATA" == true ]] || die '--purge-db requires --purge-data'
 if [[ "$MODE" != uninstall && ( "$PURGE_DATA" == true || "$PURGE_DB" == true ) ]]; then
     die '--purge-data and --purge-db require --uninstall'
