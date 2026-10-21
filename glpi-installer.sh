@@ -187,7 +187,7 @@ menu_settings() {
             [[ -z "$value" ]] || GLPI_VERSION=$value
             ask_menu_input 'Domaine DNS (Entrée = accès par IP) : ' DOMAIN
             if [[ -n "$DOMAIN" ]]; then
-                ask_menu_input 'Activer HTTPS avec Let’s Encrypt ? [o/N] : ' answer
+                ask_menu_input 'Activer HTTPS avec Certbot ? [o/N] : ' answer
                 case "$answer" in
                     o|O|oui|Oui|y|Y) SSL=true
                         ask_menu_input 'Email pour le certificat : ' SSL_EMAIL
@@ -956,6 +956,9 @@ upgrade_existing() {
     target_major=${GLPI_VERSION%%.*}
     if [[ "$current_major" != "$target_major" && "$ALLOW_MAJOR" != true ]]; then
         die "Major upgrade ($current_version -> $GLPI_VERSION) requires --allow-major-upgrade"
+    fi
+    if [[ "$current_major" == 10 && "$target_major" == 11 ]]; then
+        inspect_major_upgrade_plugins
     fi
     info "GLPI upgrade: $current_version -> $GLPI_VERSION"
     check_runtime
