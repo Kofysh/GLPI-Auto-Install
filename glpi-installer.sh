@@ -14,6 +14,7 @@ ACK_PLUGIN_MIGRATION=false
 RESTORE_SOURCE=
 CONFIRM_RESTORE=
 FPM_CHILDREN=8
+TUNE_DB=false
 PURGE_DATA=false
 PURGE_DB=false
 CONFIRM_PURGE=
@@ -113,6 +114,7 @@ Usage: sudo bash glpi-installer.sh [options]
   --backup-dir PATH         Directory for local recovery archives
   --retention-days N        Prune old archives after success (1-365; opt-in)
   --require-https           Require successful automatic HTTPS
+  --tune-db                 Tune MariaDB on a dedicated GLPI host
   --archive-sha256 HASH     Check an official release archive digest
   --uninstall               Back up and remove GLPI application code
   --purge-data              Also remove GLPI data and configuration
@@ -254,6 +256,7 @@ while (($#)); do
         --allow-major-upgrade) ALLOW_MAJOR=true; shift ;;
         --ack-plugin-migration) ACK_PLUGIN_MIGRATION=true; shift ;;
         --require-https) REQUIRE_HTTPS=true; shift ;;
+        --tune-db) TUNE_DB=true; shift ;;
         --restore|--confirm-restore|--backup-dir|--retention-days|--archive-sha256)
             (($# >= 2)) || die "Missing value for $1"
             case "$1" in
@@ -1261,6 +1264,7 @@ main() {
     check_runtime
     latest_release
     configure_database
+    configure_db_tuning
     download_glpi
     configure_glpi
     configure_fpm
