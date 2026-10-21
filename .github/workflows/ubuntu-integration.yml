@@ -18,14 +18,14 @@ jobs:
       - uses: actions/checkout@v5
       - name: Install GLPI on an ephemeral Ubuntu VM
         run: |
-          sudo bash glpi-installer.sh --yes --glpi-version 11.0.9 --domain localhost
+          sudo MYSQL_PWD=root bash glpi-installer.sh --yes --glpi-version 11.0.9 --domain localhost
           test -f /var/www/glpi/bin/console
           sudo test -f /root/.glpi_credentials
           sudo test -S /run/php/glpi-fpm.sock
           curl --fail --location --max-time 15 -o /dev/null http://127.0.0.1/
       - name: Back up and uninstall while retaining SQL and data
         run: |
-          sudo bash glpi-installer.sh --uninstall --yes
+          sudo MYSQL_PWD=root bash glpi-installer.sh --uninstall --yes
           test ! -e /var/www/glpi
           sudo test -e /var/lib/glpi
           sudo test -e /root/.glpi_credentials
