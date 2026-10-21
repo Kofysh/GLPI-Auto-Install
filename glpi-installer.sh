@@ -895,7 +895,7 @@ backup_existing() {
     [[ -s "$BACKUP_PATH/files.tar.gz" ]] || die 'Empty file backup'
     if command -v mariadb-dump >/dev/null 2>&1; then dump=mariadb-dump; else dump=mysqldump; fi
     info "Backing up SQL database $DB_NAME"
-    "$dump" --single-transaction --quick --routines --events --triggers \
+    "$dump" --single-transaction --quick --routines --events --triggers --add-drop-database \
         --databases "$DB_NAME" | gzip -1 > "$BACKUP_PATH/database.sql.gz" ||
         die 'SQL backup failed; installation was not modified'
     [[ -s "$BACKUP_PATH/database.sql.gz" ]] || die 'Empty SQL backup'
