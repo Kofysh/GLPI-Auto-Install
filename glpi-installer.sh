@@ -1051,6 +1051,25 @@ verify_recovery_point() {
     info "Verified recovery point: $source_abs"
 }
 
+validate_recovery_members() {
+    local path
+    while IFS= read -r path; do
+        case "$path" in
+            var/www/glpi|var/www/glpi/*|var/lib/glpi|var/lib/glpi/*|
+            var/log/glpi|var/log/glpi/*|etc/glpi|etc/glpi/*|
+            root/.glpi_credentials|etc/apache2/sites-available/glpi.conf|
+            etc/apache2/sites-available/000-0-glpi.conf|etc/httpd/conf.d/00-glpi.conf|
+            etc/apache2/vhosts.d/00-glpi.conf|etc/apache2/conf.d/00-glpi.conf|
+            etc/cron.d/glpi|etc/periodic/15min/glpi) ;;
+            *) die "Unexpected path in recovery archive: $path" ;;
+        esac
+    done < <(tar -tzf "$RESTORE_SOURCE/files.tar.gz")
+    if tar -tvzf "$RESTORE_SOURCE/files.tar.gz" |
+        awk 'substr($1,1,1) ~ /^[lh]$/ {found=1} END {exit !found}'; then
+        die 'Recovery archive contains linked files. Review manually before restoring.'
+    fi
+}
+
 uninstall_existing() {
     if [[ "$PURGE_DATA" == true && "$CONFIRM_PURGE" != DELETE-GLPI-DATA ]]; then
         die 'Data removal also requires --confirm-purge DELETE-GLPI-DATA'
