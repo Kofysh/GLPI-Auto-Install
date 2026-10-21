@@ -941,6 +941,25 @@ restore_application_files() {
     done
 }
 
+inspect_major_upgrade_plugins() {
+    local slug path found=""
+    for slug in formcreator genericobject fields; do
+        for path in "$INSTALL_DIR/plugins/$slug" "$DATA_DIR/marketplace/$slug" "$INSTALL_DIR/marketplace/$slug"; do
+            if [[ -d "$path" ]]; then found="$found $slug"; break; fi
+        done
+    done
+    if [[ -z "$found" ]]; then return 0; fi
+    warn "GLPI 10 to 11 requires special migration steps for:$found"
+    if [[ "$ACK_PLUGIN_MIGRATION" != true ]]; then
+        if [[ "$MENU_SELECTED" == true ]]; then
+            confirm_operation 'La migration spécifique de ces plugins a-t-elle été préparée ?'
+            ACK_PLUGIN_MIGRATION=true
+        else
+            die 'Review plugin migration instructions, then pass --ack-plugin-migration'
+        fi
+    fi
+}
+
 upgrade_existing() {
     local current_version current_major target_major
     current_version=$(existing_version)
