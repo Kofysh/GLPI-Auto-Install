@@ -154,11 +154,12 @@ select_operation() {
     printf '  1) Installer GLPI\n'
     printf '  2) Mettre à jour GLPI\n'
     printf '  3) Désinstaller GLPI\n'
+    printf '  4) Restaurer une sauvegarde\n'
     printf '  0) Quitter\n\n'
 
     local choice
     while true; do
-        printf 'Votre choix [0-3] : ' > /dev/tty
+        printf 'Votre choix [0-4] : ' > /dev/tty
         if ! IFS= read -r choice < /dev/tty; then
             die 'Aucune sélection reçue ; opération annulée.'
         fi
@@ -166,8 +167,9 @@ select_operation() {
             1) MODE=install; MENU_SELECTED=true; return 0 ;;
             2) MODE=upgrade; MENU_SELECTED=true; return 0 ;;
             3) MODE=uninstall; MENU_SELECTED=true; return 0 ;;
+            4) MODE=restore; MENU_SELECTED=true; return 0 ;;
             0|q|Q) info 'Opération annulée.'; exit 0 ;;
-            *) printf 'Choix invalide. Saisissez 0, 1, 2 ou 3.\n' > /dev/tty ;;
+            *) printf 'Choix invalide. Saisissez 0, 1, 2, 3 ou 4.\n' > /dev/tty ;;
         esac
     done
 }
@@ -200,6 +202,11 @@ menu_settings() {
             [[ -z "$value" ]] || GLPI_VERSION=$value
             ask_menu_input 'Autoriser une migration majeure 10 vers 11 ? [o/N] : ' answer
             case "$answer" in o|O|oui|Oui|y|Y) ALLOW_MAJOR=true ;; esac
+            ;;
+        restore)
+            ask_menu_input 'Dossier de sauvegarde à restaurer : ' RESTORE_SOURCE
+            ask_menu_input 'Saisir RESTORE-GLPI pour confirmer : ' CONFIRM_RESTORE
+            [[ "$CONFIRM_RESTORE" == RESTORE-GLPI ]] || die 'Confirmation de restauration incorrecte.'
             ;;
         uninstall)
             printf 'Par défaut la base SQL, les fichiers et la configuration sont conservés.\n'
